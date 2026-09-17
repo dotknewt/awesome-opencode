@@ -19,7 +19,11 @@ The repository root `LICENSE` includes the declared MIT grant and explicitly
 records that the inspected source supplied no copyright notice. It does not
 infer a copyright holder from the manifest author field.
 
-Migration changes are limited to native namespacing, references to those
-namespaced skills and MCP connection, installed-layout documentation, and the
-new toolkit packaging documents. Python implementation and tests are otherwise
-copied unchanged; generated `__pycache__` and `.pyc` files are excluded.
+Version 0.1.0 migration changes were limited to native namespacing, references
+to those namespaced skills and MCP connection, installed-layout documentation,
+and toolkit packaging documents. Version 0.2.0 adds repository-native Python
+lifecycle/guest provisioning code, the project credential helper, tests, and
+updated operational references. These additions were authored in this
+repository rather than copied from the source revision above. Generated
+`__pycache__`, `.pyc`, eval payloads, tests, and planning artifacts remain
+excluded from the npm package.

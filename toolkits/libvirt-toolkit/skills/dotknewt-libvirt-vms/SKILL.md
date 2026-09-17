@@ -38,7 +38,7 @@ bounded to lifecycle unless the user also requests guest access or execution.
 |---|---|---|
 | Discover | `host_info`, `template_list`, `vm_list`, `vm_inspect` | Inspect before changing state. |
 | Publish | `template_publish` | Source must be prepared, supported, and shut off. |
-| Create | `vm_create` | Use a published name/version and unique VM name. |
+| Create | `vm_create` | Prepare a fresh project credential first; pass only its account and public key. |
 | Power | `vm_start`, `vm_shutdown`, `vm_force_stop` | Force-stop only after explicit user authorization. |
 | Snapshot | `snapshot_list`, `snapshot_create`, `snapshot_restore` | VM must be shut off with no managed-save state. |
 | Remove | `vm_delete`, `template_remove` | Confirm target; templates with dependents are rejected. |
@@ -47,6 +47,29 @@ For graceful shutdown, call `vm_shutdown` with a bounded wait. A timeout is not
 proof that shutdown failed or succeeded, and the operation never escalates to a
 force-stop. Call `vm_inspect` again. Continue with a shut-off-only operation only
 after the VM reports shut off; ask separately before `vm_force_stop`.
+
+### Creation-time guest access
+
+When a new VM needs project access, invoke `dotknewt-guest-access` by name and
+run its installed `project_ssh.py prepare` helper **before** `vm_create`. Read
+only the emitted public-key file. Call `vm_create` with `guest_user` and the
+single option-free `ssh-ed25519` public-key line; never send the local
+`creation_id`, private-key path, or private-key bytes.
+
+The provider returns a separately generated VM `uuid` and `guest_access`
+metadata. Require `guest_access.status=provisioned`, the requested account, and
+the prepared public-key fingerprint, then bind the unchanged local
+`creation_id` to that returned VM UUID. Record the selected MCP connection name,
+host, owner, session, and domain separately from generic provider type
+`libvirt`. On an error or uncertain creation result, preserve the pending local
+credential unchanged for recovery; do not guess a UUID or reuse it for another
+creation.
+
+Ordinary `vm_start`, reconnect, and `snapshot_restore` reuse and verify the bound
+credential. They never create or rotate login keys. A missing/tampered local
+credential blocks managed access. A recreated VM with a new UUID is a new
+creation and receives a fresh credential without deleting or overwriting the old
+VM's directory.
 
 ## Guest-access handoff
 
@@ -64,10 +87,13 @@ Create or update this handoff for both newly created and existing clones:
 ## Guest-access handoff
 - Requested outcome:
 - Provider / host / owner / session / domain:
+- Provider connection identity:
 - Connection origin:
 - Candidate endpoint and provenance:
 - Intended account / home:
 - Domain and guest identity evidence:
+- Credential creation_id / VM UUID / account / public-key fingerprint:
+- Installed helper / credential directory / generated SSH config:
 - Available tooling:
 - Lifecycle: untested
 - Guest prerequisites: untested
@@ -95,6 +121,8 @@ libvirt identifiers alone do not make a guest independent.
 Toolkit snapshots are powered-off disk/configuration/NVRAM layers, not native
 `virsh` snapshot or checkpoint objects. They contain no RAM. Restoring creates a
 fresh writable child, preserves the working VM identity, and leaves it shut off.
+The preserved VM-level `guest_access` account/fingerprint is metadata to verify;
+snapshot restore does not provision a new key.
 
 ## Rejections and interrupted operations
 

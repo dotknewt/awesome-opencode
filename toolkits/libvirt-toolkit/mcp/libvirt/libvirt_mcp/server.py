@@ -149,9 +149,13 @@ def create_server(lifecycle: Any) -> MCPServer:
         version: NonEmptyString,
         vcpus: PositiveInteger | None = None,
         memory_mib: PositiveInteger | None = None,
+        guest_user: NonEmptyString | None = None,
+        ssh_public_key: NonEmptyString | None = None,
     ) -> CallToolResult:
         """Create a powered-off linked working VM from a managed template."""
-        return _call(lifecycle, "vm_create", name, template, version, vcpus, memory_mib)
+        return _call(
+            lifecycle, "vm_create", name, template, version, vcpus, memory_mib, guest_user, ssh_public_key
+        )
 
     @strict_arguments.tool(server)
     def vm_start(name: NonEmptyString) -> CallToolResult:

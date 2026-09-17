@@ -71,21 +71,21 @@ test("CLI project lifecycle reports plans, dry-run, listings, errors, and restar
   ]);
   assert.equal(dryRun.code, 0, dryRun.stderr);
   assert.match(dryRun.stdout, /DRY RUN/i);
-  assert.match(dryRun.stdout, /install libvirt-toolkit@0\.1\.0/);
+  assert.match(dryRun.stdout, /install libvirt-toolkit@0\.2\.0/);
   await assert.rejects(access(path.join(project, ".opencode")));
 
   const install = await runCli(["install", "libvirt-toolkit", "--project", project]);
   assert.equal(install.code, 0, install.stderr);
-  assert.match(install.stdout, /install libvirt-toolkit@0\.1\.0/);
+  assert.match(install.stdout, /install libvirt-toolkit@0\.2\.0/);
   assert.match(install.stdout, /restart OpenCode/i);
 
   const list = await runCli(["list", "--project", project]);
   assert.equal(list.code, 0, list.stderr);
-  assert.match(list.stdout, /libvirt-toolkit\s+0\.1\.0\s+0\.1\.0/);
+  assert.match(list.stdout, /libvirt-toolkit\s+0\.2\.0\s+0\.2\.0/);
 
   const update = await runCli(["update", "--project", project]);
   assert.equal(update.code, 0, update.stderr);
-  assert.match(update.stdout, /update libvirt-toolkit@0\.1\.0/);
+  assert.match(update.stdout, /update libvirt-toolkit@0\.2\.0/);
   assert.match(update.stdout, /restart OpenCode/i);
 
   const duplicate = await runCli(["install", "libvirt-toolkit", "--project", project]);
@@ -94,7 +94,7 @@ test("CLI project lifecycle reports plans, dry-run, listings, errors, and restar
 
   const uninstall = await runCli(["uninstall", "libvirt-toolkit", "--project", project]);
   assert.equal(uninstall.code, 0, uninstall.stderr);
-  assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.1\.0/);
+  assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.2\.0/);
   assert.match(uninstall.stdout, /restart OpenCode/i);
   const config = JSON.parse(await readFile(path.join(project, "opencode.json"), "utf8"));
   assert.deepEqual(config.mcp, {});

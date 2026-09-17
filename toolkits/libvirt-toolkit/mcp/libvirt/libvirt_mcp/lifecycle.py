@@ -13,6 +13,7 @@ from typing import Any
 from .commands import CommandRunner
 from .domain import DomainSpec, sanitize_clone_xml, validate_overrides
 from .errors import LifecycleError
+from .guest_access import GuestAccessProvisioner, LibguestfsGuestAdapter
 from .store import Store
 
 
@@ -23,9 +24,10 @@ DEFAULT_COMMAND_TIMEOUT = 30
 class Lifecycle:
     """Managed-template and working-VM lifecycle for one local libvirt session."""
 
-    def __init__(self, root: Path, runner=None):
+    def __init__(self, root: Path, runner=None, guest_access=None):
         self.store = Store(Path(root))
         self.runner = runner or CommandRunner()
+        self.guest_access = guest_access or GuestAccessProvisioner(LibguestfsGuestAdapter(self.runner))
 
     def _run(self, argv: list[str], *, allow_failure: bool = False, timeout: float = DEFAULT_COMMAND_TIMEOUT):
         result = self.runner.run(argv, timeout_seconds=timeout)
@@ -340,7 +342,14 @@ class Lifecycle:
         version: str,
         vcpus: int | None = None,
         memory_mib: int | None = None,
+        guest_user: str | None = None,
+        ssh_public_key: str | None = None,
     ) -> dict[str, Any]:
+        if (guest_user is None) != (ssh_public_key is None):
+            raise LifecycleError(
+                "invalid_guest_access", "guest_user and ssh_public_key must either both be supplied or both be omitted"
+            )
+        guest_request = None
         validate_overrides(vcpus, memory_mib)
         vm_dir = self.store.owned_path("vms", name)
         disk = vm_dir / "disk.qcow2"
@@ -348,6 +357,8 @@ class Lifecycle:
         xml_path = vm_dir / "domain.xml"
         with self.store.mutation_lock():
             self.store.require_no_journal()
+            if guest_user is not None and ssh_public_key is not None:
+                guest_request = self.guest_access.prepare(guest_user, ssh_public_key)
             data = self.store.load()
             if name in data["vms"] or self._virsh("dominfo", name, allow_failure=True).returncode == 0:
                 raise LifecycleError("already_exists", f"domain {name} already exists")
@@ -373,9 +384,27 @@ class Lifecycle:
                 resources.append(str(nvram))
             journal = self.store.begin(f"vm_create:{name}", resources)
             try:
+                guest_access_metadata = None
+                if guest_request is not None:
+                    pending_guest_access = {
+                        "user": guest_request.user,
+                        "fingerprint": guest_request.fingerprint,
+                        "status": "pending",
+                    }
+                    self.store.update_journal(
+                        journal, "creating_overlay", guest_access=pending_guest_access
+                    )
                 vm_dir.mkdir(parents=True, exist_ok=False)
                 base = str(Path(template_record["disk"]).resolve())
                 self._run(["qemu-img", "create", "-f", "qcow2", "-F", "qcow2", "-b", base, str(disk)])
+                if guest_request is not None:
+                    self.store.update_journal(
+                        journal, "provisioning_guest", guest_access=pending_guest_access
+                    )
+                    guest_access_metadata = self.guest_access.provision(disk, guest_request)
+                    self.store.update_journal(
+                        journal, "guest_provisioned", guest_access=guest_access_metadata
+                    )
                 if template_record.get("nvram"):
                     shutil.copy2(template_record["nvram"], nvram)
                     os.chmod(nvram, 0o600)
@@ -407,6 +436,8 @@ class Lifecycle:
                     "xml": str(xml_path.resolve()),
                     "nvram": str(nvram.resolve()) if vm_nvram else None,
                 }
+                if guest_access_metadata is not None:
+                    record["guest_access"] = guest_access_metadata
                 data["vms"][name] = record
                 self.store.save(data)
                 self.store.clear_journal()

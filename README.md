@@ -12,8 +12,10 @@ server for a bounded `qemu:///session` workflow.
   file descriptor, and the parent retains the descriptor until recovery and the
   complete transaction finish. Other `flock` implementations are not supported.
 - For the libvirt MCP server: Python 3.10+, `uv`, `virsh`, `qemu-img`, and a
-  working per-user `qemu:///session`. `passt` is optional for the documented
-  loopback-forwarding workflow.
+  working per-user `qemu:///session`. Credentialed VM creation additionally
+  needs `virt-customize` and `virt-cat`; the project credential helper needs
+  `ssh-keygen`. `passt` is optional for the documented loopback-forwarding
+  workflow, and SSH/rsync/SCP are access/transfer clients.
 - Network access on first MCP launch, or a populated `uv` cache, so `uv` can
   acquire the pinned `mcp==2.2.0` dependency.
 

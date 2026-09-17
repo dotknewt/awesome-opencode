@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "libvirt-toolkit",
   "namespace": "dotknewt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Safe local libvirt lifecycle, template, snapshot, and verified guest-access workflows for OpenCode.",
   "license": "MIT",
   "exports": [
@@ -37,6 +37,6 @@
   ],
   "dependencies": {
     "platforms": ["linux"],
-    "executables": ["uv", "virsh", "qemu-img"]
+    "executables": ["uv", "virsh", "qemu-img", "python3", "ssh-keygen", "virt-customize", "virt-cat"]
   }
 }

@@ -1,375 +1,466 @@
-# SSH Workflow
+# Project SSH workflow
 
-Use these Bash examples only after filling parameters from evidence. Keep probes
-bounded and noninteractive until trusted identity and authentication are known.
+Use this workflow only with credentials created by the installed
+`dotknewt-guest-access` helper. Every guest SSH, SCP, rsync, and effective-config
+inspection must use the generated project config and its fixed alias
+`project-vm`. Do not consult `~/.ssh`, an SSH agent, default known-hosts files,
+or a multiplexed connection.
 
-## Inventory and define the endpoint without defeating existing configuration
+Run the sequence in one POSIX shell. Set the helper to its absolute installed
+path; never resolve it relative to a source checkout. Initialize one cleanup
+handler before creating temporary files so later stages do not replace an
+earlier trap:
 
-Prefer an existing SSH alias when one is supplied:
+```sh
+set -eu
+HELPER=/absolute/installed/skills/dotknewt-guest-access/scripts/project_ssh.py
+PROJECT_ROOT=/absolute/path/to/project
+VM_NAME=replace-with-unique-vm-name
+GUEST_USER=developer
 
-```bash
-ssh_target='dev-guest'
-ssh_args=()
-scp_args=()
-rsync_route_port=''
-effective_config=$(ssh -G "${ssh_args[@]}" -- "$ssh_target")
-printf '%s\n' "$effective_config" \
-  | grep -E '^(hostname|user|port|proxyjump|proxycommand|hostkeyalias|identityfile|identityagent|identitiesonly|stricthostkeychecking|userknownhostsfile|globalknownhostsfile|knownhostscommand|verifyhostkeydns|updatehostkeys|controlmaster|controlpath|controlpersist) '
-ssh-add -l
+candidate_file=
+rsync_wrapper=
+staging_dir=
+cleanup_project_ssh() {
+  for temporary in "$candidate_file" "$rsync_wrapper"; do
+    [ -z "$temporary" ] || rm -f -- "$temporary"
+  done
+  [ -z "$staging_dir" ] || rm -rf -- "$staging_dir"
+}
+trap cleanup_project_ssh EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+json_string() {
+  JSON_FIELD=$1 JSON_DOCUMENT=$2 python3 - <<'PY'
+import json
+import os
+import sys
+
+document = json.loads(os.environ["JSON_DOCUMENT"])
+field = os.environ["JSON_FIELD"]
+if not isinstance(document, dict) or not isinstance(document.get(field), str):
+    raise SystemExit(f"missing or non-string JSON field: {field}")
+sys.stdout.write(document[field])
+PY
+}
 ```
 
-For a direct endpoint, keep address, port, and intended account separate:
+## Prepare once, before VM creation
 
-```bash
-guest_host='127.0.0.1'
-guest_port='22042'
-guest_user='developer'
-ssh_target="${guest_user}@${guest_host}"
-case "$guest_port" in
-  *[!0-9]*|'') printf 'invalid SSH port: %s\n' "$guest_port" >&2; exit 1 ;;
-esac
-ssh_args=(-p "$guest_port")
-scp_args=(-P "$guest_port")
-rsync_route_port=$guest_port
-effective_config=$(ssh -G "${ssh_args[@]}" -- "$ssh_target")
-printf '%s\n' "$effective_config" \
-  | grep -E '^(hostname|user|port|proxyjump|proxycommand|hostkeyalias|identityfile|identityagent|identitiesonly|stricthostkeychecking|userknownhostsfile|globalknownhostsfile|knownhostscommand|verifyhostkeydns|updatehostkeys|controlmaster|controlpath|controlpersist) '
-ssh-add -l
+Create a fresh credential for every new VM creation attempt:
+
+```sh
+prepare_json=$(python3 "$HELPER" prepare \
+  --project-root "$PROJECT_ROOT" \
+  --vm-name "$VM_NAME" \
+  --provider libvirt \
+  --guest-user "$GUEST_USER") || exit 1
+
+PREPARE_JSON=$prepare_json EXPECTED_VM_NAME=$VM_NAME \
+EXPECTED_GUEST_USER=$GUEST_USER python3 - <<'PY'
+import json
+import os
+
+document = json.loads(os.environ["PREPARE_JSON"])
+required = {
+    "provider", "vm_name", "guest_user", "creation_id", "vm_uuid",
+    "fingerprint", "status", "credential_dir", "private_key_path",
+    "public_key_path",
+}
+if set(document) != required:
+    raise SystemExit("unexpected prepare response schema")
+if document["provider"] != "libvirt":
+    raise SystemExit("unexpected prepare provider")
+if document["vm_name"] != os.environ["EXPECTED_VM_NAME"]:
+    raise SystemExit("unexpected prepare VM name")
+if document["guest_user"] != os.environ["EXPECTED_GUEST_USER"]:
+    raise SystemExit("unexpected prepare guest user")
+if document["status"] != "pending" or document["vm_uuid"] is not None:
+    raise SystemExit("prepare did not return a pending unbound credential")
+PY
+
+CREATION_ID=$(json_string creation_id "$prepare_json")
+CREDENTIAL_DIR=$(json_string credential_dir "$prepare_json")
+PUBLIC_KEY_PATH=$(json_string public_key_path "$prepare_json")
+PREPARED_FINGERPRINT=$(json_string fingerprint "$prepare_json")
+SSH_PUBLIC_KEY=$(PUBLIC_KEY_PATH=$PUBLIC_KEY_PATH python3 - <<'PY'
+import os
+from pathlib import Path
+
+text = Path(os.environ["PUBLIC_KEY_PATH"]).read_text(encoding="utf-8")
+lines = text.splitlines()
+if len(lines) != 1:
+    raise SystemExit("public key file must contain exactly one line")
+fields = lines[0].split()
+if len(fields) not in (2, 3) or fields[0] != "ssh-ed25519":
+    raise SystemExit("public key file is not one option-free Ed25519 key")
+print(" ".join(fields), end="")
+PY
+)
 ```
 
-Do not add `-F /dev/null`, `IdentitiesOnly=yes`, or an arbitrary `-i` merely to
-make a probe look deterministic. Those options bypass compatible user config or
-agent identities. Add an override only after the inventory shows why it is needed.
-Empty route arrays preserve an alias's configured port, ProxyJump, identities,
-agent, and other settings; direct endpoints populate the port once. The effective
-configuration inventory is local-only: it performs no connection or
-authentication. Record its trust settings, but do not rely on a permissive
-`StrictHostKeyChecking` value, different user/global known-hosts files, a
-`KnownHostsCommand`, DNS SSHFP trust, host-key updates, or an existing multiplexed
-connection for this guest. The workflow below supplies stricter command-line
-values after selecting and verifying a dedicated trust store.
+The schema check and field extraction use JSON parsing, never `eval` or shell
+code generation. `SSH_PUBLIC_KEY` is read only from `public_key_path`; pass that
+value and `GUEST_USER` to `vm_create`. Never read the private key or put
+private-key bytes or `private_key_path` in an MCP request,
+helper `bind` call, log, handoff, or report. The server receives only
+`guest_user` and the one-line Ed25519 public key; it does not receive
+`creation_id`.
 
-## Verify host-key trust
+If creation fails or its result is uncertain, preserve the pending credential
+directory unchanged for recovery. Do not bind it to a guessed domain and do not
+reuse it for another creation. A definite retry that creates a different VM
+requires another `prepare`; earlier pending or bound directories remain intact.
 
-Resolve the effective **guest endpoint** through SSH config before inspecting
-trusted state. `HostKeyAlias` takes precedence when configured. Otherwise,
-known-hosts uses the hostname for port 22 and bracketed host/port form for a
-non-default port:
+## Bind the returned VM identity
 
-```bash
-effective_host=$(printf '%s\n' "$effective_config" | awk '$1 == "hostname" {print $2; exit}')
-effective_port=$(printf '%s\n' "$effective_config" | awk '$1 == "port" {print $2; exit}')
-host_key_alias=$(printf '%s\n' "$effective_config" | awk '$1 == "hostkeyalias" {print $2; exit}')
-if [ -n "$host_key_alias" ] && [ "$host_key_alias" != none ]; then
-  known_host=$host_key_alias
-elif [ "$effective_port" = 22 ]; then
-  known_host=$effective_host
-else
-  known_host="[${effective_host}]:${effective_port}"
-fi
+Accept identity only from the selected provider connection's `vm_create`
+response. Record that connection's name, virtualization host, owner,
+`qemu:///session`, and domain alongside the helper record; the helper's
+`--provider libvirt` value is not a substitute for that connection identity.
 
-# Select this path explicitly; quoting preserves spaces in an operator-selected path.
-known_hosts_file=${GUEST_KNOWN_HOSTS_FILE:-"$HOME/.ssh/known_hosts"}
-[ -n "$known_hosts_file" ] || { printf 'empty guest trust-store path\n' >&2; exit 1; }
-case "$known_hosts_file" in
-  /*) ;;
-  *) printf 'guest trust-store path must be absolute: %s\n' "$known_hosts_file" >&2; exit 1 ;;
-esac
-known_hosts_dir=${known_hosts_file%/*}
-[ -n "$known_hosts_dir" ] || known_hosts_dir=/
-install -d -m 700 -- "$known_hosts_dir"
-touch "$known_hosts_file"
-chmod 600 "$known_hosts_file"
-[ -w "$known_hosts_file" ] || {
-  printf 'guest trust store is not writable: %s\n' "$known_hosts_file" >&2
+Require all of the following before binding:
+
+- response `uuid` becomes helper `vm_uuid`;
+- response `guest_access.user` equals the requested account;
+- response `guest_access.fingerprint` equals the helper's prepared public-key
+  fingerprint;
+- response `guest_access.status` is `provisioned`; and
+- the local `creation_id` is unchanged and was not sent to the provider.
+
+Then bind metadata only. `bind` never receives private-key contents:
+
+```sh
+[ "$RETURNED_GUEST_ACCESS_STATUS" = provisioned ] || {
+  printf '%s\n' 'guest access was not provisioned' >&2
   exit 1
 }
-ssh-keygen -F "$known_host" -f "$known_hosts_file"
+[ "$RETURNED_GUEST_ACCESS_USER" = "$GUEST_USER" ] || {
+  printf '%s\n' 'returned guest account does not match' >&2
+  exit 1
+}
+[ "$RETURNED_GUEST_ACCESS_FINGERPRINT" = "$PREPARED_FINGERPRINT" ] || {
+  printf '%s\n' 'returned public-key fingerprint does not match' >&2
+  exit 1
+}
+bind_json=$(python3 "$HELPER" bind \
+  --credential-dir "$CREDENTIAL_DIR" \
+  --provider libvirt \
+  --vm-name "$VM_NAME" \
+  --creation-id "$CREATION_ID" \
+  --vm-uuid "$RETURNED_VM_UUID" \
+  --fingerprint "$RETURNED_GUEST_ACCESS_FINGERPRINT" \
+  --guest-user "$RETURNED_GUEST_ACCESS_USER") || exit 1
+
+BIND_JSON=$bind_json EXPECTED_VM_UUID=$RETURNED_VM_UUID python3 - <<'PY'
+import json
+import os
+
+document = json.loads(os.environ["BIND_JSON"])
+if document.get("status") != "bound":
+    raise SystemExit("bind did not return a bound credential")
+if document.get("vm_uuid") != os.environ["EXPECTED_VM_UUID"]:
+    raise SystemExit("bind returned a different VM UUID")
+PY
 ```
 
-Existing records for `known_host` must be compared with trusted evidence; do
-not append around a conflict. The explicit command-line policy used later takes
-precedence over permissive user configuration while leaving identity, agent,
-ProxyJump, and other routing choices intact.
+On normal `vm_start`, reconnect, and `snapshot_restore`, call `verify` with the
+bound `creation_id`, VM UUID, fingerprint, and account. Never rotate or prepare
+a new key for those operations. A missing/tampered local key or a changed UUID
+is a blocker, not permission to overwrite credentials. If the provider recreated
+the VM with a new UUID, treat it as a new creation and use a separately prepared
+credential; preserve the old VM's directory.
 
-If no trusted key exists, request only the independently trusted algorithm. This
-example expects an ED25519 fingerprint. Scan the effective guest endpoint, then
-normalize its host field to the same `known_host` token SSH will verify:
+## Establish the endpoint and host identity
 
-```bash
-trusted_fingerprint='SHA256:replace-with-trusted-ed25519-fingerprint'
-scan_host=$effective_host
-scan_port=$effective_port
+Keep the client, virtualization host, and guest distinct. Record the endpoint's
+provenance and inspect routing from the actual client. A passt listener on
+`127.0.0.1` of a remote virtualization host is not client loopback.
+
+Before any guest authentication, obtain `TRUSTED_HOST_FINGERPRINT` through an
+independently trusted source such as a verified console or measured
+image/first-boot record. `ssh-keyscan` supplies only an unauthenticated
+candidate.
+
+Choose exactly one endpoint setup. For a directly reachable guest:
+
+```sh
+SSH_HOST=$GUEST_HOST
+SSH_PORT=$GUEST_PORT
+SCAN_HOST=$SSH_HOST
+SCAN_PORT=$SSH_PORT
+HOST_KEY_ALIAS=
+```
+
+For a remote-host loopback forward, first use a separately managed explicit
+configuration in a dedicated terminal. This authenticates the management host,
+not the guest; its host identity must already be trusted under that management
+policy:
+
+```sh
+MANAGEMENT_CONFIG=/absolute/path/to/approved-management-ssh-config
+ssh -F "$MANAGEMENT_CONFIG" -N -o ExitOnForwardFailure=yes \
+  -L "127.0.0.1:${CLIENT_TUNNEL_PORT}:127.0.0.1:${REMOTE_GUEST_PORT}" \
+  -- "$VIRTUALIZATION_HOST_ALIAS"
+```
+
+In the project workflow shell, point guest scanning/configuration at the client
+side of that tunnel but use a stable guest identity token:
+
+```sh
+SSH_HOST=127.0.0.1
+SSH_PORT=$CLIENT_TUNNEL_PORT
+SCAN_HOST=$SSH_HOST
+SCAN_PORT=$SSH_PORT
+HOST_KEY_ALIAS=$STABLE_GUEST_HOST_KEY_ALIAS
+```
+
+Collect the candidate without authenticating. The helper validates the endpoint
+and alias before mutation, derives the normalized direct/IPv6/alias token,
+requires exactly one unique Ed25519 key, compares its fingerprint with the
+independently trusted value, and performs a no-follow locked/atomic update of
+`known_hosts` inside this credential directory:
+
+```sh
 candidate_file=$(mktemp)
-verified_key_file=$(mktemp)
-candidate_keys_file=$(mktemp)
-rsync_ssh_wrapper=''
-cleanup_guest_access_files() {
-  rm -f "$candidate_file" "$verified_key_file" "$candidate_keys_file"
-  [ -z "$rsync_ssh_wrapper" ] || rm -f "$rsync_ssh_wrapper"
-}
-trap cleanup_guest_access_files EXIT
-timeout 8s ssh-keyscan -T 5 -t ed25519 -p "$scan_port" \
-  "$scan_host" >"$candidate_file"
-candidate_count=$(awk 'NF >= 3 && $2 == "ssh-ed25519" {print $2, $3}' \
-  "$candidate_file" | sort -u | tee "$candidate_keys_file" | wc -l)
-[ "$candidate_count" -eq 1 ] || {
-  printf 'expected exactly one unique ED25519 candidate, got %s\n' \
-    "$candidate_count" >&2
-  exit 1
-}
-{
-  printf '%s ' "$known_host"
-  cat "$candidate_keys_file"
-} >"$verified_key_file"
-candidate_fingerprint=$(ssh-keygen -E sha256 -lf "$verified_key_file" \
-  | awk '{print $2}')
-printf 'candidate ED25519 fingerprint: %s\n' "$candidate_fingerprint"
-[ "$candidate_fingerprint" = "$trusted_fingerprint" ] || {
-  printf 'host-key fingerprint mismatch\n' >&2
-  exit 1
-}
+timeout 8s ssh-keyscan -T 5 -t ed25519 -p "$SCAN_PORT" \
+  -- "$SCAN_HOST" >"$candidate_file"
+
+set -- python3 "$HELPER" enroll \
+  --credential-dir "$CREDENTIAL_DIR" \
+  --provider libvirt \
+  --vm-name "$VM_NAME" \
+  --creation-id "$CREATION_ID" \
+  --vm-uuid "$RETURNED_VM_UUID" \
+  --fingerprint "$RETURNED_GUEST_ACCESS_FINGERPRINT" \
+  --guest-user "$GUEST_USER" \
+  --hostname "$SSH_HOST" \
+  --port "$SSH_PORT" \
+  --trusted-host-fingerprint "$TRUSTED_HOST_FINGERPRINT" \
+  --candidate-file "$candidate_file"
+if [ -n "$HOST_KEY_ALIAS" ]; then
+  set -- "$@" --host-key-alias "$HOST_KEY_ALIAS"
+fi
+enroll_json=$("$@") || exit 1
+
+KNOWN_HOSTS_FILE=$(json_string known_hosts_path "$enroll_json")
+ENROLLED_HOSTNAME=$(json_string hostname "$enroll_json")
+ENROLLED_HOST_TOKEN=$(json_string host_key_token "$enroll_json")
+ENROLLED_HOST_FINGERPRINT=$(json_string host_key_fingerprint "$enroll_json")
+[ "$ENROLLED_HOST_FINGERPRINT" = "$TRUSTED_HOST_FINGERPRINT" ] || exit 1
 ```
 
-`ssh-keyscan` does not follow SSH config's `ProxyJump`. If `effective_host` is not
-directly reachable from the client, expose that guest endpoint through an
-approved temporary tunnel using the configured jump alias, then set `scan_host`
-and `scan_port` to the client side of that tunnel. Keep `known_host` derived from
-the effective guest target (or `HostKeyAlias`), not from the jump host. The
-remote-loopback example below applies this pattern concretely.
+`enroll` rejects control/whitespace, SSH `%`, and known-hosts pattern characters
+in hostnames/aliases before opening trust state. Nondefault literal IPv6 is
+normalized as `[address]:port`; a supplied alias is the exact token. Candidate
+and trust files use no-follow operations. A per-credential lock covers reading,
+conflict checking, temporary-file fsync, and atomic replacement, so concurrent
+helper calls cannot lose an enrollment. Existing exact matches are idempotent;
+conflicts fail without changing `known_hosts`.
 
-Authenticate that fingerprint through a separate trusted source: a verified
-console, image/build record, provider-published fingerprint, or an operator who
-can inspect the guest. `ssh-keyscan` itself authenticates nothing. After that
-comparison succeeds, place the exact verified key in the selected known-hosts
-file and enforce that file together with `StrictHostKeyChecking=yes`. Disable
-additional global stores with `GlobalKnownHostsFile=none` so another configured
-key cannot satisfy the check instead. Also disable `KnownHostsCommand` and DNS
-SSHFP trust, prevent post-handshake host-key enrollment, and require a fresh
-non-multiplexed connection. Never use `StrictHostKeyChecking=no` or an empty trust
-store to work around a mismatch.
+No guest authentication command appears before this comparison and enrollment.
+Never default to `~/.ssh/known_hosts`, append around a conflict, enroll loopback
+or the management host as guest identity, or use `StrictHostKeyChecking=no`.
+The helper-owned trust store remains under the private credential directory,
+already covered by the anchored `/.libvirt-toolkit/` Git ignore entry.
 
-Append only after that trusted comparison and only when no conflicting record
-was found above:
+## Generate and inspect the strict project config
 
-```bash
-cat "$verified_key_file" >>"$known_hosts_file"
-ssh-keygen -F "$known_host" -f "$known_hosts_file"
-ssh_trust_args=(
-  -o StrictHostKeyChecking=yes
-  -o "UserKnownHostsFile=$known_hosts_file"
-  -o GlobalKnownHostsFile=none
-  -o KnownHostsCommand=none
-  -o VerifyHostKeyDNS=no
-  -o UpdateHostKeys=no
-  -o ControlMaster=no
-  -o ControlPath=none
-)
+Only after the verified host key is in the project trust store, generate the
+config:
+
+```sh
+set -- python3 "$HELPER" configure \
+  --credential-dir "$CREDENTIAL_DIR" \
+  --provider libvirt \
+  --vm-name "$VM_NAME" \
+  --creation-id "$CREATION_ID" \
+  --vm-uuid "$RETURNED_VM_UUID" \
+  --fingerprint "$RETURNED_GUEST_ACCESS_FINGERPRINT" \
+  --guest-user "$GUEST_USER" \
+  --hostname "$ENROLLED_HOSTNAME" \
+  --port "$SSH_PORT" \
+  --known-hosts "$KNOWN_HOSTS_FILE"
+if [ -n "$HOST_KEY_ALIAS" ]; then
+  set -- "$@" --host-key-alias "$HOST_KEY_ALIAS"
+fi
+configure_json=$("$@") || exit 1
+
+CONFIGURE_JSON=$configure_json EXPECTED_HOST=$ENROLLED_HOSTNAME \
+EXPECTED_PORT=$SSH_PORT python3 - <<'PY'
+import json
+import os
+
+document = json.loads(os.environ["CONFIGURE_JSON"])
+if document.get("status") != "bound" or document.get("alias") != "project-vm":
+    raise SystemExit("configure returned an unexpected identity or alias")
+if document.get("hostname") != os.environ["EXPECTED_HOST"]:
+    raise SystemExit("configure returned an unexpected hostname")
+if document.get("port") != int(os.environ["EXPECTED_PORT"]):
+    raise SystemExit("configure returned an unexpected port")
+if not isinstance(document.get("config_path"), str):
+    raise SystemExit("configure did not return config_path")
+PY
+CONFIG_PATH=$(json_string config_path "$configure_json")
 ```
 
-`ControlPath=none` prevents reuse of an already-authenticated master connection,
-which would skip the fresh guest host-key exchange these overrides are intended
-to verify. Preserving existing routing, identity, and agent selection does not
-mean preserving trust alternatives or connection reuse that bypasses this check.
+Leave `HOST_KEY_ALIAS` empty only for a direct endpoint whose hostname/port
+lookup token was enrolled. The tunnel setup supplies the stable guest alias.
+Inspect only the extracted config path:
 
-Authenticate and enroll each algorithm independently when policy requires more
-than ED25519. Never append unverified RSA/ECDSA lines returned by a broader scan.
-
-For clones or rebuilt guests, compare the trusted source identity when available.
-If the source or sibling cannot be inspected, mark that comparison `untested`.
-
-## Verify the intended account and home
-
-Only now probe SSH transport and intended-account authentication. The strict
-overrides guarantee that the independently verified guest key is the key used by
-this connection, even if the inventoried configuration was permissive:
-
-```bash
-timeout 12s ssh \
-  -o BatchMode=yes \
-  -o ConnectTimeout=5 \
-  -o ConnectionAttempts=1 \
-  "${ssh_trust_args[@]}" \
-  "${ssh_args[@]}" \
-  -- "$ssh_target" true
-probe_status=$?
+```sh
+ssh -G -T -F "$CONFIG_PATH" project-vm
 ```
 
-Record stderr and distinguish route/timeout, connection refusal, host-key
-rejection, and authentication rejection. A refusal proves only that the probed
-address and port rejected the connection from this origin. No SSH authentication
-command belongs before guest-key verification and enrollment.
+Confirm the expected hostname, port, user, `IdentityFile`, `IdentitiesOnly=yes`,
+project `UserKnownHostsFile`, `GlobalKnownHostsFile=none`,
+`StrictHostKeyChecking=yes`, disabled DNS/known-host command/key updates, and
+disabled control master/path. Do not add `-i`, use `ssh-add`, or merge user SSH
+configuration.
 
-After that succeeds, run a fixed diagnostic command before constructing
-destination paths:
+## Authenticate and inspect the regular-user context
 
-```bash
-ssh "${ssh_trust_args[@]}" "${ssh_args[@]}" -- "$ssh_target" \
+All guest invocations use the project config:
+
+```sh
+timeout 12s ssh -F "$CONFIG_PATH" \
+  -o BatchMode=yes -o ConnectTimeout=5 -o ConnectionAttempts=1 \
+  project-vm true
+
+ssh -F "$CONFIG_PATH" project-vm \
   'id; printf "home=%s\n" "$HOME"; hostname; printf "cwd=%s\n" "$PWD"'
-```
 
-Confirm the effective user is the intended regular account. Capture the guest's
-home as data without allowing the client shell to expand guest syntax:
+guest_home_b64=$(ssh -F "$CONFIG_PATH" project-vm \
+  'printf %s "$HOME" | base64')
+SIMPLE_GUEST_PARENT=$(GUEST_HOME_B64=$guest_home_b64 python3 - <<'PY'
+import base64
+import os
+import re
+from pathlib import PurePosixPath
 
-```bash
-guest_home=$(
-  ssh "${ssh_trust_args[@]}" "${ssh_args[@]}" -- "$ssh_target" 'printf "%s" "$HOME"'
+encoded = "".join(os.environ["GUEST_HOME_B64"].split())
+try:
+    home = base64.b64decode(encoded, validate=True).decode("utf-8")
+except (ValueError, UnicodeDecodeError) as exc:
+    raise SystemExit("guest home was not valid base64 UTF-8") from exc
+if not re.fullmatch(r"/[A-Za-z0-9._/-]+", home):
+    raise SystemExit("guest home contains characters unsafe for transfer clients")
+if str(PurePosixPath(home)) != home or home == "/":
+    raise SystemExit("guest home is not a normalized absolute path")
+print(home, end="")
+PY
 )
-case "$guest_home" in
-  /*) ;;
-  *) printf 'guest returned an invalid home: %s\n' "$guest_home" >&2; exit 1 ;;
-esac
+GUEST_PROJECT=$SIMPLE_GUEST_PARENT/project
 ```
 
-Do not write `"$ssh_target:~/project"`: the meaning of `~`, quoting, and the
-remote transfer shell can differ. Build the path from the verified guest home.
-Use a simple generated project directory name when possible:
+Distinguish route timeout, refusal, host-key rejection, and authentication
+rejection. Confirm the effective account is the intended non-root user. Capture
+its absolute home as base64 remote data; do not assume `/home/<user>` or use a
+local `~` expansion. The validation above intentionally restricts transfer
+destinations to normalized paths made only from ordinary path characters.
 
-```bash
-project_name='example-project'
-guest_project="${guest_home%/}/workspace/${project_name}"
-```
+## Transfer without copying credentials
 
-For remote shell operations on that path, encode it after confirming `base64` is
-available on both ends. This preserves spaces and shell metacharacters as data:
+The local runtime directory must never enter the guest. Prefer rsync and exclude
+it explicitly even though it is Git-ignored:
 
-```bash
-guest_project_b64=$(printf '%s' "$guest_project" | base64 | tr -d '\n')
-ssh "${ssh_trust_args[@]}" "${ssh_args[@]}" -- "$ssh_target" \
-  "GUEST_PROJECT_B64='$guest_project_b64' sh -s" <<'REMOTE'
-set -eu
-guest_project=$(printf '%s' "$GUEST_PROJECT_B64" | base64 -d)
-mkdir -p -- "$guest_project"
-REMOTE
-```
-
-## Transfer and inspect the destination
-
-Prefer rsync when available because `--protect-args` preserves a remote path as
-one argument. Give rsync a temporary executable wrapper so its remote-shell
-string parser never has to interpret shell escaping for a trust-store path that
-may contain spaces. The wrapper adds only verified trust policy and the direct
-endpoint's port; the underlying SSH invocation still reads configured identity,
-agent, and ProxyJump routing. `/tmp` keeps the executable path itself free of
-spaces. The trailing slashes copy project contents into the destination:
-
-```bash
-local_project='/absolute/client/path/example-project/'
-rsync_ssh_wrapper=$(mktemp /tmp/guest-access-rsync-ssh.XXXXXX)
-cat >"$rsync_ssh_wrapper" <<'WRAPPER'
+```sh
+rsync_wrapper=$(mktemp /tmp/project-vm-rsync.XXXXXX)
+cat >"$rsync_wrapper" <<'EOF'
 #!/bin/sh
+exec ssh -F "$PROJECT_VM_CONFIG" "$@"
+EOF
+chmod 700 "$rsync_wrapper"
+export PROJECT_VM_CONFIG=$CONFIG_PATH
+rsync -a --protect-args --exclude='/.libvirt-toolkit/' \
+  -e "$rsync_wrapper" -- "$PROJECT_ROOT/" "project-vm:$GUEST_PROJECT/"
+```
+
+If rsync is unavailable, do not recursively SCP the project root. Stage a safe
+payload outside the project after positively selecting intended files and
+confirming the staging tree contains no `.libvirt-toolkit`, private keys,
+credential records, caches, or unrelated secrets. Replace the example selection
+below with the explicit files needed for the requested work; do not add `.` or
+the project root:
+
+```sh
+staging_dir=$(mktemp -d "${TMPDIR:-/tmp}/project-vm-stage.XXXXXX")
+SAFE_STAGING_DIR=$staging_dir/project
+install -d -m 0700 "$SAFE_STAGING_DIR"
+
+# Positive allowlist example: replace these entries for the actual project.
+set -- src tests pyproject.toml
+for relative in "$@"; do
+  case $relative in
+    ''|/*|.|..|*/../*|../*|*/..|.libvirt-toolkit|.libvirt-toolkit/*)
+      printf 'unsafe staging selection: %s\n' "$relative" >&2
+      exit 1
+      ;;
+  esac
+  [ -e "$PROJECT_ROOT/$relative" ] && [ ! -L "$PROJECT_ROOT/$relative" ] || exit 1
+  cp -R -- "$PROJECT_ROOT/$relative" "$SAFE_STAGING_DIR/"
+done
+
+STAGED_ROOT=$SAFE_STAGING_DIR python3 - <<'PY'
+import os
+from pathlib import Path
+
+root = Path(os.environ["STAGED_ROOT"])
+blocked_parts = {".libvirt-toolkit", ".git", ".pytest_cache", "__pycache__", "node_modules"}
+blocked_names = {"connection.json", "id_ed25519", "id_rsa", "known_hosts"}
+for path in root.rglob("*"):
+    relative = path.relative_to(root)
+    if path.is_symlink() or blocked_parts.intersection(relative.parts) or path.name in blocked_names:
+        raise SystemExit(f"unsafe staged path: {relative}")
+    if path.is_file():
+        if b"-----BEGIN OPENSSH PRIVATE KEY-----" in path.read_bytes():
+            raise SystemExit(f"private SSH key in staged path: {relative}")
+    elif not path.is_dir():
+        raise SystemExit(f"non-file staged path: {relative}")
+PY
+
+guest_parent_b64=$(printf %s "$SIMPLE_GUEST_PARENT" | base64 | tr -d '\n')
+ssh -F "$CONFIG_PATH" project-vm sh -s -- "$guest_parent_b64" <<'REMOTE'
 set -eu
-set -- -o StrictHostKeyChecking=yes \
-  -o "UserKnownHostsFile=$GUEST_KNOWN_HOSTS_FILE" \
-  -o GlobalKnownHostsFile=none \
-  -o KnownHostsCommand=none \
-  -o VerifyHostKeyDNS=no \
-  -o UpdateHostKeys=no \
-  -o ControlMaster=no \
-  -o ControlPath=none "$@"
-if [ -n "${GUEST_SSH_PORT:-}" ]; then
-  set -- -p "$GUEST_SSH_PORT" "$@"
-fi
-exec ssh "$@"
-WRAPPER
-chmod 700 "$rsync_ssh_wrapper"
-export GUEST_KNOWN_HOSTS_FILE=$known_hosts_file
-export GUEST_SSH_PORT=$rsync_route_port
-rsync -a --protect-args -e "$rsync_ssh_wrapper" \
-  -- "$local_project" "${ssh_target}:${guest_project}/"
-ssh "${ssh_trust_args[@]}" "${ssh_args[@]}" -- "$ssh_target" \
-  "GUEST_PROJECT_B64='$guest_project_b64' sh -s" <<'REMOTE'
+parent=$(printf %s "$1" | base64 -d)
+[ "$parent" = "$HOME" ] && [ -d "$parent" ] || exit 1
+[ ! -e "$parent/project" ] || {
+  printf '%s\n' 'refusing to overwrite remote project destination' >&2
+  exit 1
+}
+REMOTE
+scp -F "$CONFIG_PATH" -r -- "$SAFE_STAGING_DIR" \
+  project-vm:"$SIMPLE_GUEST_PARENT/"
+ssh -F "$CONFIG_PATH" project-vm \
+  'test -d "$HOME/project" && test ! -e "$HOME/project/.libvirt-toolkit"'
+```
+
+Verify destination ownership, expected files, and a revision or checksums when
+meaningful. A zero transfer exit without destination inspection is insufficient.
+
+## Run and report
+
+Run only the requested command as the intended account from an explicit, simple
+verified guest working directory. Hand even the validated path to a fixed remote
+script as base64 data rather than interpolating it into remote shell source:
+
+```sh
+guest_project_b64=$(printf %s "$GUEST_PROJECT" | base64 | tr -d '\n')
+timeout 20m ssh -F "$CONFIG_PATH" project-vm sh -s -- "$guest_project_b64" <<'REMOTE'
 set -eu
-guest_project=$(printf '%s' "$GUEST_PROJECT_B64" | base64 -d)
-test -d "$guest_project"
-stat -c '%U:%G %n' "$guest_project"
-find "$guest_project" -mindepth 1 -maxdepth 1 -print
-if git -C "$guest_project" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  git -C "$guest_project" status --short
-fi
+project=$(printf %s "$1" | base64 -d)
+[ "$project" = "$HOME/project" ] && [ -d "$project" ] || exit 1
+[ ! -e "$project/.libvirt-toolkit" ] || exit 1
+cd -- "$project"
+exec python -m pytest -q
 REMOTE
 ```
 
-Use SCP only when rsync is unavailable and the destination path is simple and
-verified. Modern OpenSSH uses SFTP mode by default:
-
-```bash
-simple_guest_parent="${guest_home%/}/workspace"
-scp "${ssh_trust_args[@]}" "${scp_args[@]}" -r -- "/absolute/client/path/$project_name" \
-  "${ssh_target}:${simple_guest_parent}/"
-```
-
-Restrict this SCP form to a destination verified to contain only ordinary path
-characters; otherwise use rsync with `--protect-args`. Verify the resulting path
-with the encoded fixed-script pattern above.
-
-Verify ownership, expected files, and revision or checksums as appropriate. Keep
-the client source path distinct from virtualization-host paths and guest paths.
-
-## Run a command with an explicit guest cwd
-
-For a simple verified destination and a literal requested command, make the cwd
-and completion status visible:
-
-```bash
-requested_command='python -m pytest -q'
-requested_command_b64=$(printf '%s' "$requested_command" | base64 | tr -d '\n')
-timeout 20m ssh "${ssh_trust_args[@]}" "${ssh_args[@]}" -- "$ssh_target" \
-  "GUEST_PROJECT_B64='$guest_project_b64' REQUESTED_COMMAND_B64='$requested_command_b64' sh -s" <<'REMOTE'
-set -eu
-guest_project=$(printf '%s' "$GUEST_PROJECT_B64" | base64 -d)
-requested_command=$(printf '%s' "$REQUESTED_COMMAND_B64" | base64 -d)
-cd -- "$guest_project"
-exec sh -lc "$requested_command"
-REMOTE
-command_status=$?
-printf 'guest command exit=%s\n' "$command_status"
-```
-
-Keep the remote script fixed and pass path and command text through the verified
-encoding rather than interpolating them as shell syntax. Report the literal
-requested command, client endpoint, guest account, guest cwd, exit status, and
-relevant stdout/stderr. A timeout is a distinct result, not successful completion.
-
-## Remote virtualization hosts
-
-Treat a forward bound to `127.0.0.1` on a remote virtualization host as reachable
-only on that host. Either run the SSH client there through an approved management
-path or establish an explicit tunnel/jump from the client. Record which origin
-performed host-key verification, authentication, transfer, and command execution;
-do not rewrite `127.0.0.1` as though it referred to the user's workstation.
-
-For Scenario C's remote-host loopback forward, reserve a client-local port and
-open an approved tunnel in a dedicated terminal:
-
-```bash
-virtualization_host_alias='hv-east'
-remote_guest_port='22241'
-client_tunnel_port='32241'
-ssh -N -o ExitOnForwardFailure=yes \
-  -L "127.0.0.1:${client_tunnel_port}:127.0.0.1:${remote_guest_port}" \
-  -- "$virtualization_host_alias"
-```
-
-Keep that terminal open only for the workflow. Define a separate guest alias so
-SSH uses the tunneled endpoint while storing the **guest's** key under a stable
-guest identity rather than under the virtualization host or generic loopback:
-
-```sshconfig
-Host parser-vm-via-hv-east
-  HostName 127.0.0.1
-  Port 32241
-  User dev
-  HostKeyAlias parser-vm@hv-east
-```
-
-Then select `ssh_target='parser-vm-via-hv-east'` with empty `ssh_args` and
-`scp_args`. `ssh -G` resolves `127.0.0.1:32241` as the scan endpoint and
-`parser-vm@hv-east` as `known_host`; compare the resulting guest-key fingerprint
-with trusted guest evidence. The `hv-east` host key authenticates only the
-separately trusted outer tunnel and must not be enrolled as the guest key.
-Opening that tunnel is not an authentication attempt to the guest; perform it
-only after the management alias's own host identity is already trusted. Guest
-authentication still waits until the tunneled guest key has been independently
-verified and enrolled in the explicit guest trust store. Close the tunnel when
-finished.
+For other paths or command parameters, apply the same encoded-data/fixed-script
+pattern rather than interpolating them. Report provider
+connection identity, `creation_id`, VM UUID, account/public-key fingerprint,
+endpoint and host-key evidence, guest account/home/cwd, transfer verification,
+literal command, exit status, and relevant output. Never report private-key
+content.

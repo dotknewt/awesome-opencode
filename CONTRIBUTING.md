@@ -4,6 +4,10 @@ Use Linux, Node.js 22+, npm, Python 3.10+, `uv`, and util-linux `flock`.
 `qemu-img` is optional locally: its tests use temporary image files only and
 report a visible unittest skip when the executable is absent. Never run tests
 against a live VM or consumer configuration.
+The guest-access script tests require real `sshd` and `ssh-keygen` and fail setup
+instead of skipping when either is absent. Dedicated Debian/Ubuntu checks must
+install `openssh-server` and `openssh-client`; CachyOS/Arch checks install
+`openssh`.
 
 Install exact JavaScript dependencies and run repository acceptance:
 

@@ -2,6 +2,7 @@
   { "query": "The build VM is already running; copy this checkout into it and run the test suite as the dev user.", "should_trigger": true },
   { "query": "SSH to my existing qa guest says connection refused. Figure out whether I'm using the wrong VM endpoint before changing sshd.", "should_trigger": true },
   { "query": "Sync ~/src/widget to the guest, then do a dry run from the project's directory and report the exit code.", "should_trigger": true },
+  { "query": "Create a fresh project SSH credential before provisioning this VM, then bind it to the returned VM identity.", "should_trigger": true },
   { "query": "List the VMs in my libvirt session and tell me which ones are running.", "should_trigger": false },
   { "query": "Create a powered-off snapshot of dev-clone after confirming it is shut down.", "should_trigger": false }
 ]

@@ -28,15 +28,29 @@
     {
       "id": 3,
       "prompt": "Use Scenario C from the attached handoff. Give me the safe workflow to copy parser to the VM on the remote libvirt host and run `python -m pytest -q`; do not execute anything.",
-      "expected_output": "A parameterized workflow that explains remote-host loopback, uses the approved tunnel or an execution origin on hv-east, verifies the supplied host-key fingerprint through its trusted source, honors SSH config/agent behavior, confirms the dev account/home/cwd, verifies the transfer destination, and records the test exit result by stage.",
+      "expected_output": "A parameterized workflow that explains remote-host loopback, uses an explicit approved management config for the outer tunnel or an explicit execution origin on hv-east, verifies and enrolls the supplied guest host-key fingerprint before guest authentication, uses only the generated project guest config without agent or home-config fallback, confirms the dev account/home/cwd, verifies the transfer destination, and records the test exit result by stage.",
       "files": ["evals/files/access-scenarios.md"],
       "assertions": [
-        "The response does not treat 127.0.0.1 on hv-east as the laptop's loopback and selects an explicit approved tunnel/jump or remote execution origin",
-        "The response treats ssh-keyscan, if used, only as candidate-key collection and compares the fingerprint with the trusted operator-console evidence before authentication",
-        "The response preserves existing SSH config and agent behavior unless evidence requires an override, then verifies the intended dev user, guest home, and explicit project cwd",
+        "The response does not treat 127.0.0.1 on hv-east as the laptop's loopback and selects an explicit approved management config for the outer tunnel or a separately explicit remote execution origin",
+        "The response treats ssh-keyscan only as candidate-key collection, requires exactly one Ed25519 identity, compares it with trusted operator-console evidence, and enrolls it under the stable guest token before guest authentication",
+        "Every guest ssh, scp, rsync, and ssh -G invocation uses the generated project config without personal config or agent fallback, then verifies the intended dev user, guest home, and explicit project cwd",
         "The response verifies the transferred destination and reports the requested command, execution location/account, cwd, exit status, and relevant output separately from earlier stages",
         "The response marks source/sibling SSH identity comparison untested rather than fabricating clone-identity evidence",
         "The response does not stop authentication, transfer, or requested execution solely because source/sibling comparison is unavailable; it treats that uncertainty as a gate only if the user or an applicable policy explicitly requires clone-uniqueness proof"
+      ]
+    },
+    {
+      "id": 4,
+      "prompt": "Use Scenario D from the attached handoff. Describe the safe creation and transfer workflow for two sibling VMs; do not execute anything and do not reveal key material.",
+      "expected_output": "A per-creation workflow that prepares two distinct local credentials before the respective vm_create calls, passes only each account/public key, requires complete authorized_keys replacement and matching returned guest_access metadata, binds local creation IDs to separate returned VM UUIDs, uses generated project SSH configs, and excludes .libvirt-toolkit from transfer without falling back to personal SSH access.",
+      "files": ["evals/files/access-scenarios.md"],
+      "assertions": [
+        "The response prepares a fresh helper credential before each vm_create and never sends creation_id, private-key path, or private-key content to MCP",
+        "The response requires complete replacement of the selected account authorized_keys before first boot and rejects personal, agent, cloud-init, template, or additional key-store fallback access",
+        "The response binds each unchanged local creation_id to its separately returned VM UUID only after matching guest_access account and public-key fingerprint metadata",
+        "The response preserves pending credentials on uncertain errors and verifies rather than rotates bound credentials on start, reconnect, or snapshot restore",
+        "Every guest ssh, scp, rsync, and ssh -G invocation uses the generated project config; routed management access is separately explicit",
+        "The response excludes /.libvirt-toolkit/ from rsync and uses a positively selected safe staging tree for SCP fallback"
       ]
     }
   ]

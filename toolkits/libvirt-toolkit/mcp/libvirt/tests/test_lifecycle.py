@@ -13,7 +13,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from libvirt_mcp.errors import LifecycleError
 from libvirt_mcp.lifecycle import Lifecycle
 
-from fakes import FakeRunner
+from fakes import FakeGuestAccess, FakeRunner
+
+
+PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f project-vm"
+FINGERPRINT = "SHA256:ZkAslGjFiUHdGf/WUL8rQvkib4PTvQatUV0OUQSncCA"
 
 
 FIXTURE = Path(__file__).parent / "fixtures" / "source.xml"
@@ -254,6 +258,120 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("aa:bb:cc", xml)
         root = ET.fromstring(xml)
         self.assertEqual(vm["nvram"], root.find("./os/nvram/source").get("file"))
+
+    def test_create_provisions_overlay_before_define_and_preserves_backing(self):
+        guest_access = FakeGuestAccess()
+        self.service.guest_access = guest_access
+        template = self.publish()
+        backing_before = Path(template["disk"]).read_bytes()
+
+        vm = self.service.vm_create(
+            "work-a", "ubuntu-dev-template", "v1", guest_user="developer", ssh_public_key=PUBLIC_KEY
+        )
+
+        create_index = next(i for i, call in enumerate(self.fake.calls) if call[:2] == ["qemu-img", "create"])
+        define_index = next(i for i, call in enumerate(self.fake.calls) if call[3] == "define")
+        self.assertLess(create_index, define_index)
+        self.assertEqual([Path(vm["disk"])], [call[0] for call in guest_access.provision_calls])
+        self.assertEqual(backing_before, Path(template["disk"]).read_bytes())
+        self.assertEqual(
+            {"user": "developer", "fingerprint": FINGERPRINT, "status": "provisioned"}, vm["guest_access"]
+        )
+
+    def test_create_credential_pair_is_optional_but_incomplete_pair_fails_before_mutation(self):
+        self.publish()
+        self.assertEqual("shut off", self.service.vm_create("legacy", "ubuntu-dev-template", "v1")["state"])
+        for kwargs in ({"guest_user": "developer"}, {"ssh_public_key": PUBLIC_KEY}):
+            with self.subTest(kwargs=kwargs):
+                self.fake.calls.clear()
+                self.assert_error(
+                    "invalid_guest_access", self.service.vm_create, "incomplete", "ubuntu-dev-template", "v1", **kwargs
+                )
+                self.assertFalse((self.root / "vms" / "incomplete").exists())
+                self.assertFalse(self.service.store.journal_path.exists())
+                self.assertFalse(any(call[:2] == ["qemu-img", "create"] for call in self.fake.calls))
+
+    def test_guest_provision_failure_records_stage_and_fingerprint_for_recovery(self):
+        guest_access = FakeGuestAccess()
+        guest_access.fail_provision = True
+        self.service.guest_access = guest_access
+        self.publish()
+
+        error = self.assert_error(
+            "recovery_required",
+            self.service.vm_create,
+            "work-a",
+            "ubuntu-dev-template",
+            "v1",
+            guest_user="developer",
+            ssh_public_key=PUBLIC_KEY,
+        )
+
+        self.assertEqual("provisioning_guest", error.details["failed_stage"])
+        self.assertEqual(
+            {"user": "developer", "fingerprint": FINGERPRINT, "status": "pending"},
+            error.details["guest_access"],
+        )
+        self.assertNotIn("ssh_public_key", json.dumps(error.details))
+        self.assertNotIn("work-a", self.fake.domains)
+
+    def test_overlay_create_failure_and_timeout_retain_pending_guest_metadata(self):
+        self.service.guest_access = FakeGuestAccess()
+        self.publish()
+        original_run = self.fake.run
+
+        for label, failure in (
+            ("failure", None),
+            (
+                "timeout",
+                LifecycleError(
+                    "command_timeout",
+                    "timed out",
+                    {"side_effect_unknown": True},
+                ),
+            ),
+        ):
+            with self.subTest(label=label):
+                if label == "failure":
+                    self.fake.fail[("qemu-img", "create")] = "injected create failure"
+                else:
+                    self.fake.fail.clear()
+
+                    def run(argv, timeout_seconds=30):
+                        if list(argv[:2]) == ["qemu-img", "create"]:
+                            raise failure
+                        return original_run(argv, timeout_seconds)
+
+                    self.fake.run = run
+                error = self.assert_error(
+                    "recovery_required",
+                    self.service.vm_create,
+                    f"work-{label}",
+                    "ubuntu-dev-template",
+                    "v1",
+                    guest_user="developer",
+                    ssh_public_key=PUBLIC_KEY,
+                )
+                self.assertEqual(
+                    {"user": "developer", "fingerprint": FINGERPRINT, "status": "pending"},
+                    error.details["guest_access"],
+                )
+                self.assertEqual("creating_overlay", error.details["failed_stage"])
+                self.service.store.journal_path.unlink()
+                self.fake.run = original_run
+                self.fake.fail.clear()
+
+    def test_guest_access_metadata_survives_snapshot_create_and_restore(self):
+        self.service.guest_access = FakeGuestAccess()
+        self.publish()
+        created = self.service.vm_create(
+            "work-a", "ubuntu-dev-template", "v1", guest_user="developer", ssh_public_key=PUBLIC_KEY
+        )
+        expected = created["guest_access"]
+        self.service.snapshot_create("work-a", "clean")
+        restored = self.service.snapshot_restore("work-a", "clean")
+        self.assertEqual(expected, restored["guest_access"])
+        self.assertEqual(expected, self.service.vm_inspect("work-a")["guest_access"])
 
     def test_create_applies_consistent_cpu_memory_overrides_and_duplicate_guard(self):
         vm = self.create(vcpus=4, memory_mib=8192)

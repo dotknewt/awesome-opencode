@@ -22,10 +22,13 @@ Create or update a lightweight Markdown handoff. Preserve unknown values as
 ## Guest-access handoff
 - Requested outcome:
 - Provider / host / owner / session / domain:
+- Provider connection identity:
 - Connection origin:
 - Candidate endpoint and provenance:
 - Intended account / home:
 - Domain and guest identity evidence:
+- Credential creation_id / VM UUID / account / public-key fingerprint:
+- Installed helper / credential directory / generated SSH config:
 - Available tooling:
 - Lifecycle: untested
 - Guest prerequisites: untested
@@ -42,9 +45,9 @@ their files or tools exist in a standalone installation.
 
 ## Inventory capabilities before conclusions
 
-1. Inventory tools available at the connection origin: SSH client and config,
-   agent identities, known-hosts state, route inspection, transfer tools, and
-   provider-reported diagnostics.
+1. Inventory the installed project helper, its bound credential/config, route
+   inspection, transfer tools, and provider-reported diagnostics. Do not inspect
+   SSH-agent identities or personal `~/.ssh` defaults for project VM access.
 2. Record what each tool can actually prove. A lifecycle-only provider API does
    not prove the host lacks SSH, networking, or guest-execution capabilities.
 3. Treat a guest agent as an optional diagnostic path. Discover supported guest
@@ -77,19 +80,27 @@ first candidate endpoint fails.
 
 ## Establish trusted SSH identity and authentication
 
+For toolkit-created project VMs, require the helper's bound `creation_id`,
+provider-returned VM UUID, account, and public-key fingerprint. Verify rather
+than rotate credentials on normal start, reconnect, and snapshot restore. A
+missing local key or recreated VM UUID blocks access and requires the explicit
+new-creation workflow; never overwrite another VM's credential directory.
+
 Verify the host key through a trusted channel before accepting it. Treat
 `ssh-keyscan` output as an unauthenticated candidate key, never as identity
 proof. Reconcile changed keys with clone/rebuild evidence instead of disabling
 host-key checking.
 
-Inventory effective SSH configuration with `ssh -G`. Preserve its endpoint,
-identity, agent, and jump routing, but select an explicit writable trust store
-containing the independently verified guest key and enforce it as the sole trust
-store with `StrictHostKeyChecking=yes` for SSH, SCP, and rsync. Existing
+Inventory effective SSH configuration only with
+`ssh -G -F <project-config> project-vm`. Use that config for every guest SSH,
+SCP, and rsync invocation. It
+must select the project private key and project-local trust store with
+`StrictHostKeyChecking=yes`; never merge home configuration or agent identities. Existing
 permissive files, known-hosts commands, DNS SSHFP trust, post-handshake key
 updates, or multiplexed master connections must not relax or bypass guest trust.
-Require a fresh host-key exchange while preserving endpoint routing, identity,
-and agent selection. Do not attempt guest authentication before host-key
+Require a fresh host-key exchange. A routed management connection uses its own
+explicitly selected management config; the generated guest config still owns
+guest identity and trust. Do not attempt guest authentication before host-key
 verification. Authenticate noninteractively to the intended regular account and
 distinguish successful TCP, host-key verification, and account authentication.
 
@@ -120,8 +131,11 @@ Do not use root QGA output as normal-user setup evidence.
 
 ## Transfer and verify
 
-Choose an available transfer tool after inventory. Preserve the existing SSH
-configuration and verified host-key policy. Transfer into a destination owned by
+Choose an available transfer tool after inventory. Preserve the project SSH
+configuration and verified host-key policy. Exclude the entire anchored
+`/.libvirt-toolkit/` tree from rsync. For an SCP fallback, stage a positively
+selected safe payload outside the project rather than recursively copying the
+project root. Transfer into a destination owned by
 the intended guest user, then verify destination existence, ownership, expected
 files, and—when meaningful—a source/destination revision or checksum. Keep local
 and guest paths explicit. Do not claim transfer success from a zero exit alone if
@@ -162,6 +176,8 @@ without blocking independently trusted authentication, transfer, or execution.
 - Treating a scanned host key as trusted identity.
 - Trying a guest-reported address without checking the route from the client.
 - Treating remote-host loopback as client loopback.
+- Falling back to personal SSH config, an agent, or default known-hosts files.
+- Copying `.libvirt-toolkit` credentials with rsync or recursive SCP.
 - Assuming a guest home or allowing local shell expansion to choose it.
 - Running setup as root and reporting it as the intended user's workflow.
 - Reporting transfer or tests complete without destination or exit evidence.

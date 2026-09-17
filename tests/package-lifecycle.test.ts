@@ -12,6 +12,20 @@ interface CommandResult {
   stderr: string;
 }
 
+function isForbiddenPackedPath(entry: string): boolean {
+  return (
+    entry.endsWith(".ts") ||
+    entry.endsWith(".pyc") ||
+    entry.includes(".superpowers") ||
+    /(^|\/)(?:\.libvirt-toolkit|__pycache__|\.pytest_cache|\.mypy_cache|plans)(?:\/|$)/.test(entry) ||
+    /(^|\/)(?:id_ed25519(?:\.pub)?|connection\.json)$/.test(entry)
+  );
+}
+
+test("package artifact filter identifies project SSH connection records", () => {
+  assert.equal(isForbiddenPackedPath("toolkits/example/connection.json"), true);
+});
+
 function command(
   executable: string,
   args: string[],
@@ -118,9 +132,17 @@ test("real npm tarball remains functional after disposable package source remova
   assert.ok(packedPaths.includes("LICENSE"));
   assert.ok(packedPaths.includes("docs/architecture.md"));
   assert.ok(packedPaths.includes("toolkits/libvirt-toolkit/mcp/libvirt/libvirt_mcp/server.py"));
+  assert.ok(
+    packedPaths.includes(
+      "toolkits/libvirt-toolkit/skills/dotknewt-guest-access/scripts/project_ssh.py",
+    ),
+  );
   assert.equal(packedPaths.some((entry) => /(^|\/)tests\//.test(entry)), false);
   assert.equal(packedPaths.some((entry) => /(^|\/)evals\//.test(entry)), false);
-  assert.equal(packedPaths.some((entry) => entry.endsWith(".ts") || entry.includes(".superpowers")), false);
+  assert.equal(
+    packedPaths.some(isForbiddenPackedPath),
+    false,
+  );
 
   const extract = await command("tar", ["-xzf", archive, "-C", disposable], { cwd: root });
   assert.equal(extract.code, 0, extract.stderr);
@@ -171,6 +193,50 @@ test("real npm tarball remains functional after disposable package source remova
     assert.match(source, new RegExp(`name: ${skill}`));
   }
 
+  const helper = path.join(
+    project,
+    ".opencode",
+    "skills",
+    "dotknewt-guest-access",
+    "scripts",
+    "project_ssh.py",
+  );
+  await access(helper);
+  const prepare = await command(
+    "python3",
+    [
+      helper,
+      "prepare",
+      "--project-root",
+      project,
+      "--vm-name",
+      "package-test-vm",
+      "--provider",
+      "libvirt",
+      "--guest-user",
+      "developer",
+    ],
+    { cwd: root, env: { ...process.env, PYTHONDONTWRITEBYTECODE: "1" } },
+  );
+  assert.equal(prepare.code, 0, prepare.stderr);
+  const preparedCredential = JSON.parse(prepare.stdout) as {
+    status: string;
+    vm_uuid: string | null;
+    credential_dir: string;
+    private_key_path: string;
+    public_key_path: string;
+  };
+  assert.equal(preparedCredential.status, "pending");
+  assert.equal(preparedCredential.vm_uuid, null);
+  assert.equal(
+    path.relative(project, preparedCredential.credential_dir).startsWith(".libvirt-toolkit/ssh/"),
+    true,
+  );
+  await Promise.all([
+    access(preparedCredential.private_key_path),
+    access(preparedCredential.public_key_path),
+  ]);
+
   const serverRoot = path.dirname(server);
   const compile = await command("python3", ["-m", "compileall", "-q", serverRoot], { cwd: root });
   assert.equal(compile.code, 0, compile.stderr);
@@ -217,9 +283,9 @@ test("real npm tarball remains functional after disposable package source remova
   await rename(path.join(packagedRoot, "toolkits"), path.join(packagedRoot, "toolkits.unavailable"));
   const list = await run(["list", "--project", project]);
   assert.equal(list.code, 0, list.stderr);
-  assert.match(list.stdout, /libvirt-toolkit\s+-\s+0\.1\.0/);
+  assert.match(list.stdout, /libvirt-toolkit\s+-\s+0\.2\.0/);
   const uninstall = await run(["uninstall", "libvirt-toolkit", "--project", project]);
   assert.equal(uninstall.code, 0, uninstall.stderr);
-  assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.1\.0/);
+  assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.2\.0/);
   await assert.rejects(access(server));
 });

@@ -30,7 +30,7 @@ maximum vCPUs and 4 GiB current / 8 GiB configured memory. These are observed
 defaults, not Debian minimum requirements. Omit `vm_create` sizing overrides to
 preserve them; overrides set both current and configured values to the request.
 
-## 2. Prepare clone identity in a disposable copy
+## 2. Prepare the exact guest-access contract in a disposable copy
 
 Guest preparation is an explicit operation outside the toolkit's MCP lifecycle
 API. Keep the original source, and prepare a separate shut-off full copy with
@@ -51,53 +51,118 @@ virt-cat --connect qemu:///session -d "$PREPARED_COPY" /etc/os-release
 virt-cat --connect qemu:///session -d "$PREPARED_COPY" /etc/fstab
 ```
 
-Inspect the copy's actual accounts, mount layout, cloud-init configuration, and
-SSH units. Confirm Debian 13, an existing intended login account with a home
-directory, and `openssh-server` installed. Resolve any stale `/etc/fstab` device
-aliases in the copy before retrying failed libguestfs inspection. If packages
-are missing, install them in the copy before final identity cleanup.
+Inspect the copy's actual accounts, mount layout, cloud-init state, and SSH
+units. Confirm Debian 13 and install `openssh-server` plus `openssh-client` before
+final offline cleanup. Never use `--ssh-inject` or retain a personal/project
+public key in the shared image.
 
-For a Debian systemd guest with `ssh.service`, the following offline path does
-not require cloud-init. Set `GUEST_USER` to the inspected account, `SSH_PUBLIC_KEY`
-to an absolute host-side public-key file, and `PREPARED_HOSTNAME` to the chosen
-preparation-copy hostname. Verify those inputs before running:
+The selected non-root account must occur exactly once in `/etc/passwd`; match
+`^[a-z_][a-z0-9_-]{0,31}$`; have UID/GID in `1..4294967294`; use an executable
+absolute shell listed actively in regular `/etc/shells`; and have an absolute
+normalized home strictly below `/home`, `/srv`, `/opt`, or `/var/lib`. The home
+and every existing component through `.ssh/authorized_keys` must be non-symlink.
+The home is an owned directory; `.ssh`, if present, is a directory;
+`authorized_keys`, if present, is regular. Remove its existing login keys.
+Creation later replaces the complete file with mode 0600 inside mode-0700
+`.ssh`, both owned by that account.
+
+Require POSIX `/bin/sh`, `sshd`, Ed25519-capable `ssh-keygen`, `awk`, `base64`,
+`chmod`, `chown`, `cut`, `install`, `mktemp`, `mv`, `rm`, `rmdir`, `sha256sum`,
+`stat`, and `test`. Require regular non-symlink `/run` and
+`/etc/ssh/sshd_config`; `/run/sshd` is absent or a non-symlink directory. Create
+it mode 0755 only when absent for the policy check and remove only that owned
+directory while empty. Preserve an existing directory and contents. With a
+temporary offline Ed25519 host key, require exactly these effective values:
 
 ```sh
-virt-customize --connect qemu:///session -d "$PREPARED_COPY" --no-network \
-  --ssh-inject "$GUEST_USER:file:$SSH_PUBLIC_KEY" \
-  --truncate /etc/machine-id --delete /var/lib/dbus/machine-id \
-  --delete '/etc/ssh/ssh_host_*' \
-  --firstboot-command 'ssh-keygen -A' \
-  --firstboot-command 'systemctl enable --now ssh.service' \
-  --hostname "$PREPARED_HOSTNAME"
+sshd -T -h "$TEMPORARY_OFFLINE_HOST_KEY" -f /etc/ssh/sshd_config \
+  -C "user=$GUEST_USER,host=localhost,addr=127.0.0.1"
+# pubkeyauthentication yes
+# authorizedkeysfile .ssh/authorized_keys
+# authorizedkeyscommand none
+# trustedusercakeys none
 ```
 
-This queues SSH host-key generation before the explicit SSH enable/start
-command, and leaves an empty machine ID for systemd to regenerate. It does not
-order an already-enabled SSH unit after libguestfs firstboot; verify generated
-keys and a running SSH service in disposable working clones. Select the actual
-inspected SSH unit if this image uses a different one;
-Ubuntu's `ssh.socket` example is not evidence that a Debian image uses it.
+Keyword case is ignored; values are exact and each setting occurs once.
+Disabled public-key authentication, additional key stores, commands, or trusted
+user CAs are incompatible.
 
-If cloud-init is installed and configured, inspect its datasource, cached
-instance identity, and SSH/hostname policy. Clean its instance state as part of
-preparation and verify it will initialize each clone rather than override the
-chosen access policy. Any in-guest cleanup, including
-`cloud-init clean --logs --machine-id`, belongs before shutdown and the final
-offline customization above, and requires that initialization path to be
-configured. Deleting host keys alone is incomplete
-preparation; a verified first-boot regeneration mechanism is required.
+Disable cloud-init and create regular non-symlink
+`/etc/cloud/cloud-init.disabled`, including when cloud-init is absent. Audit and
+disable every distro, vendor, seed, or custom first-boot mechanism that could
+rewrite the selected account or key. Then create regular non-symlink
+`/etc/libvirt-toolkit/guest-access-v1.json` with exactly this parsed object:
 
-The preparation hostname is copied into every clone. Give each working VM its
-own guest hostname using separate guest configuration; fresh libvirt names,
-UUIDs, and MACs do not change guest hostnames. Remove source-specific enrollment,
-credentials, and network identity that should not be shared before publication.
+```json
+{
+  "authorized_keys": ".ssh/authorized_keys",
+  "firstboot_authorized_keys": "disabled",
+  "prepared_for": "libvirt-toolkit",
+  "version": 1
+}
+```
 
-Keep the cleaned copy shut off: booting it now consumes the first-boot actions
-intended for clones. Recheck the retained source's hash/stat against the earlier
-record. Confirm the copy is shut off with no managed save, and eject any attached
-installation media from its persistent definition using the inspected CD-ROM
-target.
+Host-key regeneration is independent of login-key provisioning. With cloud-init
+disabled, install this bounded systemd oneshot before final shutdown and make
+every inspected SSH activation path require it. The standard Debian paths shown
+are `ssh.service` and `ssh.socket`; change the assignment only to match the units
+actually inspected on the prepared image:
+
+```sh
+sudo install -d -m 0755 /etc/libvirt-toolkit
+sudo tee /usr/local/sbin/libvirt-toolkit-firstboot-hostkeys >/dev/null <<'EOF'
+#!/bin/sh
+set -eu
+/usr/bin/ssh-keygen -A
+rm -f /etc/libvirt-toolkit/host-key-generation.pending
+EOF
+sudo chmod 0755 /usr/local/sbin/libvirt-toolkit-firstboot-hostkeys
+sudo tee /etc/systemd/system/libvirt-toolkit-firstboot-hostkeys.service >/dev/null <<'EOF'
+[Unit]
+Description=Generate per-clone SSH host keys
+ConditionPathExists=/etc/libvirt-toolkit/host-key-generation.pending
+DefaultDependencies=no
+Requires=local-fs.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/libvirt-toolkit-firstboot-hostkeys
+EOF
+SSH_ACTIVATION_UNITS='ssh.service ssh.socket'
+for unit in $SSH_ACTIVATION_UNITS; do
+  sudo systemctl cat "$unit" >/dev/null
+  sudo install -d -m 0755 "/etc/systemd/system/$unit.d"
+  sudo tee "/etc/systemd/system/$unit.d/libvirt-toolkit-firstboot-hostkeys.conf" >/dev/null <<'EOF'
+[Unit]
+Requires=libvirt-toolkit-firstboot-hostkeys.service
+After=libvirt-toolkit-firstboot-hostkeys.service
+EOF
+done
+sudo systemctl daemon-reload
+for unit in $SSH_ACTIVATION_UNITS; do
+  sudo systemctl show -p Requires -p After "$unit"
+done
+```
+
+The script removes its marker only after `ssh-keygen -A` succeeds. Offline,
+truncate `/etc/machine-id`, remove
+`/var/lib/dbus/machine-id` and `/etc/ssh/ssh_host_*`, and create that pending
+marker as regular non-symlink
+`/etc/libvirt-toolkit/host-key-generation.pending`. The SSH activation units pull
+in the oneshot; do not enable it separately through `multi-user.target`.
+`DefaultDependencies=no` avoids a cycle between a socket's implicit
+`Before=sockets.target` and a normal service's implicit `After=basic.target`.
+Verify every enabled SSH service/socket has both dependency edges and that the
+marker remains pending in the shut-off publication source. Do not rely on
+libguestfs `--firstboot-command`. Boot disposable working clones to prove machine
+ID and host keys are generated before SSH starts; never boot the publication
+source and consume its oneshot.
+
+Resolve stale `/etc/fstab` aliases only in the copy. Remove source credentials,
+enrollment, secrets, and static network identity. Recheck the retained source's
+hash/stat, keep the prepared copy shut off without managed save, and eject
+installation media using its inspected target.
 
 ## 3. Publish and create a project VM
 
@@ -122,9 +187,16 @@ Then call `vm_create` (replace the example VM name with a unique project name):
 {
   "name": "my-project-debian13",
   "template": "debian13-dev-template",
-  "version": "v1"
+  "version": "v1",
+  "guest_user": "developer",
+  "ssh_public_key": "ssh-ed25519 AAAA..."
 }
 ```
+
+Before this call, invoke `dotknewt-guest-access` by name and prepare a fresh
+project credential. Pass only its public key/account; do not pass its local
+`creation_id` or private-key data. Bind that creation ID only after the response
+returns the separate VM UUID and matching `guest_access` account/fingerprint.
 
 The result is a shut-off working VM. For user-mode networking, follow
 `guest-access.md` to inspect the path, select a distinct unused virtualization-

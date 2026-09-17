@@ -79,7 +79,7 @@ libguestfs inspection/customization must work with this actual image before
 using the offline commands below. Resolve missing filesystem support, unlock
 requirements, or incorrect root mounts on the copy first.
 
-## 3. Arrange Arch SSH startup, then clean guest identity offline
+## 3. Prepare the exact guest-access contract
 
 Boot the preparation copy using a separate console workflow if guest changes
 are needed. In that guest, inspect the installed Arch OpenSSH package and units:
@@ -98,40 +98,120 @@ orders it before the daemon starts, including any local drop-ins. If that
 mechanism is missing or customized, establish and test an equivalent ordered
 key-generation service before deleting host keys.
 
-For the inspected standard units, enable and start SSH in the preparation guest
-so its key-generation dependency runs even on a fresh OpenSSH installation:
+For the inspected standard units, enable and test SSH in the preparation guest:
 
 ```sh
 sudo systemctl enable --now sshd.service
 sudo sshd -t
 ```
 
-Confirm the intended account can log in and that its SSH configuration accepts
-the selected public key. Set a preparation hostname in the copy and remove
-source-specific enrollment, credentials, or static network identity that must
-not be shared. If cloud-init is present, inspect its datasource and SSH/hostname
-policy; clean its cached instance state before shutdown and the final offline
-cleanup. Do not assume cloud-init is installed or that it will configure clones.
+The selected non-root account must occur exactly once in `/etc/passwd`; match
+`^[a-z_][a-z0-9_-]{0,31}$`; have UID/GID in `1..4294967294`; use an executable
+absolute shell listed actively in regular `/etc/shells`; and have an absolute
+normalized home strictly below `/home`, `/srv`, `/opt`, or `/var/lib`. The home
+and every existing component through `.ssh/authorized_keys` must be non-symlink.
+The home is an owned directory; `.ssh`, if present, is a directory;
+`authorized_keys`, if present, is regular. Remove all inherited login keys.
+Never use `--ssh-inject` or bake personal/project public keys into the template.
+Creation later replaces the complete file with mode 0600 inside mode-0700
+`.ssh`, both owned by this account.
 
-Shut the copy down gracefully and confirm no managed save. Set `GUEST_USER` to
-the inspected account and `SSH_PUBLIC_KEY` to the absolute server-host path of
-the intended public-key file. With successful libguestfs inspection and the
-ordered key-generation mechanism established, run on the server host:
+Require POSIX `/bin/sh`, `sshd`, Ed25519-capable `ssh-keygen`, `awk`, `base64`,
+`chmod`, `chown`, `cut`, `install`, `mktemp`, `mv`, `rm`, `rmdir`, `sha256sum`,
+`stat`, and `test`. Require regular non-symlink `/run` and
+`/etc/ssh/sshd_config`; `/run/sshd` is absent or a non-symlink directory. Create
+it mode 0755 only when absent for this policy check, then remove only that owned
+directory while empty. Preserve an existing directory and contents. With a
+temporary offline Ed25519 host key, require exactly these effective values:
 
 ```sh
-virt-customize --connect qemu:///session -d "$PREPARED_COPY" --no-network \
-  --ssh-inject "$GUEST_USER:file:$SSH_PUBLIC_KEY" \
-  --truncate /etc/machine-id --delete /var/lib/dbus/machine-id \
-  --delete '/etc/ssh/ssh_host_*'
+sshd -T -h "$TEMPORARY_OFFLINE_HOST_KEY" -f /etc/ssh/sshd_config \
+  -C "user=$GUEST_USER,host=localhost,addr=127.0.0.1"
+# pubkeyauthentication yes
+# authorizedkeysfile .ssh/authorized_keys
+# authorizedkeyscommand none
+# trustedusercakeys none
 ```
 
-The empty machine ID lets systemd initialize each clone's identity; the inspected
-Arch SSH units regenerate host keys at boot. This recipe does not depend on
-libguestfs firstboot scripts. Keep the cleaned copy shut off until publication;
-booting it now would repopulate the identities intended for clones. Recheck the
-original disk/NVRAM hash/stat against the recorded values. Eject attached install
-media using its inspected CD-ROM target, and confirm the copy remains shut off
-with no managed save.
+Keyword case is ignored; values are exact and each setting occurs once.
+Disabled public-key authentication, additional key stores, commands, or trusted
+user CAs are incompatible.
+
+Disable cloud-init and create regular non-symlink
+`/etc/cloud/cloud-init.disabled`, including when cloud-init is absent. Audit and
+disable every distro, vendor, seed, or custom first-boot mechanism that could
+rewrite the account or key. Then create regular non-symlink
+`/etc/libvirt-toolkit/guest-access-v1.json` with exactly this parsed object:
+
+```json
+{
+  "authorized_keys": ".ssh/authorized_keys",
+  "firstboot_authorized_keys": "disabled",
+  "prepared_for": "libvirt-toolkit",
+  "version": 1
+}
+```
+
+Host-key regeneration is separate from login-key provisioning. Do not merely
+assume `sshdgenkeys.service` ordering: verify it, or install this bounded systemd
+oneshot before final shutdown and make every inspected SSH activation path
+require it. The standard CachyOS path shown is `sshd.service`; add an inspected
+socket only if the prepared image actually enables one:
+
+```sh
+sudo install -d -m 0755 /etc/libvirt-toolkit
+sudo tee /usr/local/sbin/libvirt-toolkit-firstboot-hostkeys >/dev/null <<'EOF'
+#!/bin/sh
+set -eu
+/usr/bin/ssh-keygen -A
+rm -f /etc/libvirt-toolkit/host-key-generation.pending
+EOF
+sudo chmod 0755 /usr/local/sbin/libvirt-toolkit-firstboot-hostkeys
+sudo tee /etc/systemd/system/libvirt-toolkit-firstboot-hostkeys.service >/dev/null <<'EOF'
+[Unit]
+Description=Generate per-clone SSH host keys
+ConditionPathExists=/etc/libvirt-toolkit/host-key-generation.pending
+DefaultDependencies=no
+Requires=local-fs.target
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/libvirt-toolkit-firstboot-hostkeys
+EOF
+SSH_ACTIVATION_UNITS='sshd.service'
+for unit in $SSH_ACTIVATION_UNITS; do
+  sudo systemctl cat "$unit" >/dev/null
+  sudo install -d -m 0755 "/etc/systemd/system/$unit.d"
+  sudo tee "/etc/systemd/system/$unit.d/libvirt-toolkit-firstboot-hostkeys.conf" >/dev/null <<'EOF'
+[Unit]
+Requires=libvirt-toolkit-firstboot-hostkeys.service
+After=libvirt-toolkit-firstboot-hostkeys.service
+EOF
+done
+sudo systemctl daemon-reload
+for unit in $SSH_ACTIVATION_UNITS; do
+  sudo systemctl show -p Requires -p After "$unit"
+done
+```
+
+The script removes its marker only after `ssh-keygen -A` succeeds. Offline,
+truncate `/etc/machine-id`, remove
+`/var/lib/dbus/machine-id` and `/etc/ssh/ssh_host_*`, and create the marker when
+using the toolkit oneshot as regular non-symlink
+`/etc/libvirt-toolkit/host-key-generation.pending`. The SSH activation unit pulls
+in the oneshot; do not enable it separately through `multi-user.target`.
+`DefaultDependencies=no` also keeps a subsequently inspected socket path from
+forming a `sockets.target`/`basic.target` ordering cycle. Verify every enabled SSH
+service/socket has both dependency edges and that the chosen mechanism is pending
+in the shut-off publication source. Cloud-init and libguestfs firstboot scripts are
+not substitutes. Boot disposable working clones to prove machine ID and host
+keys are generated before SSH starts; never boot and consume the publication
+source's one-time mechanism.
+
+Remove source-specific enrollment, credentials, and static network identity.
+Keep the cleaned copy shut off without managed save, recheck original disk/NVRAM
+hash/stat, and eject install media using its inspected target.
 
 ## 4. Publish and create project VMs
 
@@ -156,9 +236,16 @@ Call `vm_create` with a unique working-VM name:
 {
   "name": "my-project-cachyos",
   "template": "cachyos-dev-template",
-  "version": "v1"
+  "version": "v1",
+  "guest_user": "developer",
+  "ssh_public_key": "ssh-ed25519 AAAA..."
 }
 ```
+
+Before this call, invoke `dotknewt-guest-access` by name and prepare a fresh
+project credential. Pass only its public key/account; do not pass its local
+`creation_id` or private-key data. Bind that creation ID only after the response
+returns the separate VM UUID and matching `guest_access` account/fingerprint.
 
 The result is shut off, with a writable linked disk, independent NVRAM, fresh
 UUID/MAC, and retained firmware/memfd configuration. For user-mode networking,

@@ -1,15 +1,17 @@
 # libvirt-toolkit
 
 Native OpenCode toolkit for a bounded `qemu:///session` libvirt lifecycle and a
-verified handoff into guest SSH access. Version `0.1.0` migrates the behavior of
-the original `libvirt-toolkit` 1.0.7 without changing its lifecycle core.
+verified handoff into guest SSH access. Version `0.2.0` adds per-creation,
+project-local guest credentials and offline complete replacement of the selected
+account's login keys before first boot.
 
 ## Contributions
 
 - `dotknewt-libvirt-vms`: template publication, linked working VMs, power,
   external powered-off snapshots, recovery gates, and provider handoff.
 - `dotknewt-guest-access`: provider-neutral SSH trust, authentication, transfer,
-  and requested regular-user execution.
+  and requested regular-user execution, including its installed project
+  credential helper.
 - `mcp/libvirt/server.py`: local stdio MCP server pinned to `mcp==2.2.0` by its
   PEP 723 launcher.
 
@@ -52,6 +54,29 @@ Linux is the supported server platform. Install `uv`, `virsh`, and `qemu-img`,
 and configure the toolkit owner’s `qemu:///session`. First server launch needs
 network access or a populated `uv` cache for `mcp==2.2.0`. `passt` is optional
 and required only for the documented per-VM loopback-forwarding path.
+
+Dependencies are feature-scoped even though the manifest enumerates every
+toolkit executable: lifecycle-only calls use `uv`, `virsh`, and `qemu-img`;
+credentialed `vm_create` additionally requires host `virt-customize` and
+`virt-cat`; the client helper requires Python 3.10+ and Ed25519-capable
+`ssh-keygen`. Prepared guests require POSIX `/bin/sh`, OpenSSH server `sshd`,
+`ssh-keygen`, and the commands listed in each template reference. Ubuntu/Debian
+install `openssh-server` and `openssh-client`; CachyOS/Arch installs `openssh`.
+SSH/SCP/rsync are access/transfer clients, with rsync preferred and SCP optional.
+
+For every new dev VM, run the installed helper's `prepare` operation before
+`vm_create`, pass only `guest_user` and public-key text, and bind the unchanged
+local `creation_id` to the separately returned VM UUID and matching
+`guest_access` account/fingerprint. The provider never receives private-key
+content or the local creation ID. Start, reconnect, and snapshot restore verify
+and reuse the bound credential; uncertain creation preserves pending state.
+Every guest SSH/transfer command uses the generated strict project config and
+project trust store. `/.libvirt-toolkit/` is Git-ignored by the helper and must
+also be explicitly excluded from project transfer.
+The helper's `enroll` operation validates an independently trusted Ed25519
+fingerprint against a candidate scan file, derives the exact direct/IPv6/alias
+lookup token, and updates the credential-local trust store with no-follow file
+operations under a lock. It never reads personal SSH stores.
 
 Toolkit state defaults to `$XDG_DATA_HOME/libvirt-toolkit` or
 `~/.local/share/libvirt-toolkit`. It is VM lifecycle data, not CLI installation

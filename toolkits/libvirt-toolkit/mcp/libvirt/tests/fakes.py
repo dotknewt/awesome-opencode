@@ -139,3 +139,29 @@ class FakeRunner:
                 current = backing
             return self._ok(json.dumps(chain))
         return SimpleNamespace(returncode=2, stdout="", stderr=f"unsupported qemu-img {command}")
+
+
+class FakeGuestAccess:
+    def __init__(self, events=None):
+        self.events = events if events is not None else []
+        self.fail_provision = False
+        self.prepare_calls = []
+        self.provision_calls = []
+
+    def prepare(self, user, public_key):
+        from libvirt_mcp.guest_access import validate_guest_access
+
+        request = validate_guest_access(user, public_key)
+        self.prepare_calls.append((user, public_key))
+        self.events.append("guest-preflight")
+        return request
+
+    def provision(self, disk, request):
+        self.provision_calls.append((Path(disk), request))
+        self.events.append("guest-provision")
+        if self.fail_provision:
+            from libvirt_mcp.errors import LifecycleError
+
+            raise LifecycleError("guest_provision_failed", "injected guest provisioning failure")
+        Path(disk).write_bytes(Path(disk).read_bytes() + b"+guest-key")
+        return {"user": request.user, "fingerprint": request.fingerprint, "status": "provisioned"}

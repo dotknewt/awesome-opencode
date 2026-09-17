@@ -15,10 +15,13 @@ domain before interpreting any address or changing a persistent definition:
 ## Guest-access handoff
 - Requested outcome:
 - Provider / host / owner / session / domain: libvirt / <host> / <owner> / qemu:///session / <domain>
+- Provider connection identity: <exact MCP connection name>
 - Connection origin: <client, virtualization host, or named jump path>
 - Candidate endpoint and provenance: unknown
 - Intended account / home: <account> / unknown
 - Domain and guest identity evidence: <domain UUID/MAC>; guest identity unknown
+- Credential creation_id / VM UUID / account / public-key fingerprint: <values or unknown>
+- Installed helper / credential directory / generated SSH config: <absolute paths or unknown>
 - Available tooling: <MCP connection, virsh access, route tools, SSH client, optional QGA>
 - Lifecycle: untested
 - Guest prerequisites: untested
@@ -52,6 +55,43 @@ probing. Keep these path origins distinct:
 - client paths and client loopback belong to the SSH/transfer origin;
 - virtualization-host paths, listeners, and `qemu:///session` belong to the VM owner;
 - guest paths and homes belong to the authenticated guest account.
+
+## Provision a new VM's login key before first boot
+
+For a new project VM, invoke `dotknewt-guest-access` by name and use its installed
+helper before calling `vm_create`. The local helper creates the `creation_id` and
+private key; neither enters the MCP request. Read the one-line public key from
+the emitted `public_key_path`, then call the selected libvirt MCP connection:
+
+```json
+{
+  "name": "<unique-project-vm>",
+  "template": "<published-template>",
+  "version": "<immutable-version>",
+  "guest_user": "<prepared-account>",
+  "ssh_public_key": "ssh-ed25519 AAAA..."
+}
+```
+
+Exactly one of `guest_user` and `ssh_public_key` is invalid. The key has no
+options; it may have one optional whitespace-free comment token. Creation replaces the selected account's complete
+`authorized_keys` file in the new writable overlay before domain definition or
+first boot; it never customizes the published backing image. No personal key,
+SSH-agent identity, or template login key is a fallback.
+
+Require the response's separately generated `uuid` plus exactly the matching
+`guest_access.user`, `guest_access.fingerprint`, and
+`guest_access.status=provisioned`. Bind the local `creation_id` to that UUID and
+fingerprint with the helper; `bind` receives metadata, not private-key content.
+Keep the exact MCP connection name, host, owner, session, and domain in the
+handoff because `provider=libvirt` alone is ambiguous.
+
+If the response is an error or VM outcome is uncertain, leave the helper record
+pending and stop mutations for recovery. A definite new creation gets another
+fresh credential. On start, reconnect, or snapshot restore, verify the existing
+bound record instead of preparing or rotating a key. Missing local keys block
+access; a VM recreated under a new UUID requires a new credential while the old
+directory remains untouched.
 
 ## Configure a unique passt loopback forward
 
@@ -135,7 +175,8 @@ a separate client-side tunnel, for example:
 ```sh
 VIRTUALIZATION_HOST_ALIAS='replace-with-approved-host-alias'
 CLIENT_TUNNEL_PORT='replace-with-unused-client-port'
-ssh -N -o ExitOnForwardFailure=yes \
+MANAGEMENT_CONFIG=/absolute/path/to/approved-management-ssh-config
+ssh -F "$MANAGEMENT_CONFIG" -N -o ExitOnForwardFailure=yes \
   -L "127.0.0.1:${CLIENT_TUNNEL_PORT}:127.0.0.1:${HOST_PORT}" \
   -- "$VIRTUALIZATION_HOST_ALIAS"
 ```
@@ -145,6 +186,9 @@ separate stable `HostKeyAlias` for the guest reached through the client tunnel;
 the virtualization-host key and the guest key are different trust identities.
 Record the tunneled client endpoint and its provenance in the handoff, then let
 `dotknewt-guest-access` perform trusted guest host-key verification and authentication.
+That skill's generated project config is mandatory for every guest SSH, SCP,
+rsync, and `ssh -G` invocation; the explicit management config above is only for
+the separately trusted outer route.
 
 ## Optional read-only QEMU guest-agent diagnosis
 

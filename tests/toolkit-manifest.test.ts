@@ -252,5 +252,5 @@ test("the packaged CLI validates its bundled catalog outside the source cwd", as
   );
 
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /valid: libvirt-toolkit@0\.1\.0/);
+  assert.match(result.stdout, /valid: libvirt-toolkit@0\.2\.0/);
 });

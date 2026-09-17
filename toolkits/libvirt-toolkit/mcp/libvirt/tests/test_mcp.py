@@ -51,8 +51,12 @@ class FakeLifecycle:
     def vm_inspect(self, name):
         return self._success("vm_inspect", name)
 
-    def vm_create(self, name, template, version, vcpus=None, memory_mib=None):
-        return self._success("vm_create", name, template, version, vcpus, memory_mib)
+    def vm_create(
+        self, name, template, version, vcpus=None, memory_mib=None, guest_user=None, ssh_public_key=None
+    ):
+        return self._success(
+            "vm_create", name, template, version, vcpus, memory_mib, guest_user, ssh_public_key
+        )
 
     def vm_start(self, name):
         return self._success("vm_start", name)
@@ -118,6 +122,28 @@ class MCPServerTests(unittest.IsolatedAsyncioTestCase):
         timeout_schema = tools["vm_shutdown"].input_schema["properties"]["timeout_seconds"]
         self.assertEqual(timeout_schema["minimum"], 0)
         self.assertEqual(timeout_schema["maximum"], 300)
+        create_schema = tools["vm_create"].input_schema
+        self.assertNotIn("guest_user", create_schema["required"])
+        self.assertNotIn("ssh_public_key", create_schema["required"])
+
+    async def test_vm_create_forwards_paired_guest_access_arguments(self):
+        public_key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4f project-vm"
+        async with self.client() as client:
+            result = await client.call_tool(
+                "vm_create",
+                {
+                    "name": "work-a",
+                    "template": "ubuntu",
+                    "version": "1",
+                    "guest_user": "developer",
+                    "ssh_public_key": public_key,
+                },
+            )
+        self.assertFalse(result.is_error)
+        self.assertEqual(
+            ["work-a", "ubuntu", "1", None, None, "developer", public_key],
+            result.structured_content["args"],
+        )
 
     async def test_success_is_machine_readable_and_preserves_arguments(self):
         async with self.client() as client:
