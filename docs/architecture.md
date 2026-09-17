@@ -32,7 +32,7 @@ PROJECT/
 
 Supported project config candidates are root `opencode.json`/`opencode.jsonc`
 and `.opencode/opencode.json`/`.opencode/opencode.jsonc`. More than one existing
-candidate is ambiguous and refused.
+candidate is ambiguous and refused when an operation manages MCP configuration.
 
 Global scope uses `$XDG_CONFIG_HOME/opencode`, or `~/.config/opencode`, for the
 payload, state, and `opencode.json`/`opencode.jsonc`. It does not write a project.
@@ -49,6 +49,22 @@ destinations are refused even when identical. Existing owned files must still
 match their hash/mode. MCP ownership is per `(config path, entry name)` and the
 entry is compared structurally, so harmless JSON key ordering does not matter
 but semantic local edits block update/uninstall.
+
+Target resolution computes candidate paths without accessing them. Listing and a
+plan whose selected desired manifests and selected installed records contain no
+MCP entries omit configuration from both transaction reads and changes. Their
+file/state ownership checks still apply, but unrelated configuration candidates
+are not inspected, parsed, snapshotted, created, or written. A recorded
+`configPath` on a legacy file-only state record remains valid inert metadata.
+
+If any selected desired manifest contributes MCP or any selected installed
+record owns an MCP entry, planning strictly resolves configuration. It rejects
+ambiguous, malformed, duplicate-key, symlinked, and non-file candidates, records
+all candidates in the race-safe transaction read set, and verifies prior owned
+entries. This includes removing the last entry, no-catalog uninstall, and
+no-name update. Mixed file/MCP batches therefore fail atomically at that boundary
+before payload or state writes. An explicit file-only operation does not pull an
+unselected installed MCP toolkit into configuration planning.
 
 Mutations are journaled with complete before/after snapshots and applied with
 atomic replace, fsync, and precondition rechecks. Ordinary failures attempt

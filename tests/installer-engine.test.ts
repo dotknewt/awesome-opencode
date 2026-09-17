@@ -40,6 +40,32 @@ async function fixture(version = "0.1.0") {
   return { root, catalogRoot, toolkitRoot, projectRoot, target };
 }
 
+async function setFixtureMcp(toolkitRoot: string, mcp: unknown[]): Promise<void> {
+  const manifestPath = path.join(toolkitRoot, "toolkit.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.mcp = mcp;
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+}
+
+async function addSkillOnlyToolkit(catalogRoot: string, name = "skill-toolkit"): Promise<void> {
+  const toolkitRoot = path.join(catalogRoot, name);
+  const skillName = `dotknewt-${name}`;
+  await mkdir(path.join(toolkitRoot, "skills", skillName), { recursive: true });
+  await writeFile(path.join(toolkitRoot, "skills", skillName, "SKILL.md"), `${name}\n`);
+  await writeFile(path.join(toolkitRoot, "toolkit.json"), JSON.stringify({
+    schemaVersion: 1,
+    name,
+    namespace: "dotknewt",
+    version: "0.1.0",
+    description: "skill-only fixture",
+    license: "MIT",
+    exports: [{ kind: "skill", source: `skills/${skillName}`, destination: `skills/${skillName}` }],
+    requiredSkills: [skillName],
+    mcp: [],
+    dependencies: { platforms: ["linux"], executables: [] },
+  }, null, 2));
+}
+
 function deferred() {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
@@ -97,7 +123,12 @@ test("rejects ambiguous/malformed/duplicate-key configuration before writes", as
   await writeFile(path.join(f.projectRoot, "opencode.json"), "{}\n");
   await mkdir(path.join(f.projectRoot, ".opencode"), { recursive: true });
   await writeFile(path.join(f.projectRoot, ".opencode", "opencode.jsonc"), "{}\n");
-  await assert.rejects(() => resolveTarget({ scope: "project", projectRoot: f.projectRoot }), /multiple.*config/i);
+  const target = await resolveTarget({ scope: "project", projectRoot: f.projectRoot });
+  await assert.rejects(
+    () => new InstallerEngine({ catalogRoot: f.catalogRoot, target }).planInstall(["libvirt-toolkit"]),
+    /multiple.*config/i,
+  );
+  assert.equal(await lstat(target.statePath).then(() => true, () => false), false);
   await writeFile(path.join(f.projectRoot, ".opencode", "opencode.jsonc"), "", { flag: "w" });
   // A single malformed candidate is rejected by planning.
   const other = await fixture();
@@ -108,16 +139,115 @@ test("rejects ambiguous/malformed/duplicate-key configuration before writes", as
 });
 
 test("rejects symlink and non-file config candidates instead of selecting another path", async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-config-candidate-"));
-  const projectRoot = path.join(root, "project");
-  await mkdir(projectRoot);
-  const outside = path.join(root, "outside.json");
+  const f = await fixture();
+  const candidate = path.join(f.projectRoot, "opencode.jsonc");
+  const outside = path.join(f.root, "outside.json");
   await writeFile(outside, "{}\n");
-  await symlink(outside, path.join(projectRoot, "opencode.jsonc"));
-  await assert.rejects(() => resolveTarget({ scope: "project", projectRoot }), /symlink.*opencode\.jsonc/i);
-  await rm(path.join(projectRoot, "opencode.jsonc"));
-  await mkdir(path.join(projectRoot, "opencode.jsonc"));
-  await assert.rejects(() => resolveTarget({ scope: "project", projectRoot }), /not a regular file/i);
+  await symlink(outside, candidate);
+  const symlinkTarget = await resolveTarget({ scope: "project", projectRoot: f.projectRoot });
+  await assert.rejects(
+    () => new InstallerEngine({ catalogRoot: f.catalogRoot, target: symlinkTarget }).planInstall(["libvirt-toolkit"]),
+    /symlink.*opencode\.jsonc/i,
+  );
+  await rm(candidate);
+  await mkdir(candidate);
+  const directoryTarget = await resolveTarget({ scope: "project", projectRoot: f.projectRoot });
+  await assert.rejects(
+    () => new InstallerEngine({ catalogRoot: f.catalogRoot, target: directoryTarget }).planInstall(["libvirt-toolkit"]),
+    /not a regular file/i,
+  );
+});
+
+test("skill-only plans omit configuration candidates even when their filesystem shapes are unsafe", async (t) => {
+  for (const candidateKind of ["ambiguous malformed files", "dangling symlink", "directory"] as const) {
+    await t.test(candidateKind, async () => {
+      const f = await fixture();
+      await setFixtureMcp(f.toolkitRoot, []);
+      const first = path.join(f.projectRoot, "opencode.json");
+      if (candidateKind === "ambiguous malformed files") {
+        await writeFile(first, "{ malformed\n");
+        await writeFile(path.join(f.projectRoot, "opencode.jsonc"), "{ also-malformed\n");
+      } else if (candidateKind === "dangling symlink") {
+        await symlink(path.join(f.root, "missing-dotfiles-config"), first);
+      } else {
+        await mkdir(first);
+      }
+
+      const target = await resolveTarget({ scope: "project", projectRoot: f.projectRoot });
+      const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target });
+      const configCandidates = new Set(target.configCandidates.map((candidate) => path.resolve(candidate)));
+      const assertConfigOmitted = (plan: Awaited<ReturnType<typeof engine.planInstall>>) => {
+        assert.equal(plan.reads.some((read) => configCandidates.has(path.resolve(read.path))), false);
+        assert.equal(plan.changes.some((change) => configCandidates.has(path.resolve(change.path))), false);
+      };
+
+      const install = await engine.planInstall(["libvirt-toolkit"]);
+      assertConfigOmitted(install);
+      await engine.apply(install);
+      const update = await engine.planUpdate([]);
+      assertConfigOmitted(update);
+      await engine.apply(update);
+      const uninstall = await new InstallerEngine({ catalogRoot: path.join(f.root, "gone"), target }).planUninstall(["libvirt-toolkit"]);
+      assertConfigOmitted(uninstall);
+      await engine.apply(uninstall);
+    });
+  }
+});
+
+test("an unselected installed MCP toolkit does not force explicit skill-only configuration access", async () => {
+  const f = await fixture();
+  await addSkillOnlyToolkit(f.catalogRoot);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit", "skill-toolkit"]);
+  const configBytes = await readFile(f.target.configPath, "utf8");
+  const outside = path.join(f.root, "dotfiles-opencode.json");
+  await writeFile(outside, configBytes);
+  await rm(f.target.configPath);
+  await symlink(outside, f.target.configPath);
+
+  const explicit = await engine.planUpdate(["skill-toolkit"]);
+  assert.equal(explicit.reads.some((read) => f.target.configCandidates.includes(read.path)), false);
+  await assert.rejects(() => engine.planUpdate([]), /symlink/i);
+  assert.equal(await readFile(outside, "utf8"), configBytes);
+});
+
+test("skill-only to MCP and MCP to skill-only transitions select and clean the actual config", async () => {
+  const f = await fixture();
+  const manifest = JSON.parse(await readFile(path.join(f.toolkitRoot, "toolkit.json"), "utf8"));
+  const desiredMcp = manifest.mcp;
+  await setFixtureMcp(f.toolkitRoot, []);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  const jsoncPath = path.join(f.projectRoot, "opencode.jsonc");
+  await writeFile(jsoncPath, "{\n  // consumer\n  \"theme\": \"dark\"\n}\n");
+
+  await setFixtureMcp(f.toolkitRoot, desiredMcp);
+  await engine.update(["libvirt-toolkit"]);
+  assert.match(await readFile(jsoncPath, "utf8"), /dotknewt-libvirt/);
+  assert.equal((await readInstallerState(f.target)).toolkits["libvirt-toolkit"]?.configPath, jsoncPath);
+  assert.equal(await lstat(f.target.defaultConfigPath).then(() => true, () => false), false);
+
+  await setFixtureMcp(f.toolkitRoot, []);
+  await engine.update(["libvirt-toolkit"]);
+  const cleaned = await readFile(jsoncPath, "utf8");
+  assert.doesNotMatch(cleaned, /dotknewt-libvirt/);
+  assert.match(cleaned, /consumer/);
+  assert.equal(await lstat(f.target.defaultConfigPath).then(() => true, () => false), false);
+});
+
+test("mixed skill and MCP planning rejects unsafe configuration before payload or state writes", async () => {
+  const f = await fixture();
+  await addSkillOnlyToolkit(f.catalogRoot);
+  const outside = path.join(f.root, "outside-config.json");
+  await writeFile(outside, '{"consumer":true}\n');
+  await symlink(outside, path.join(f.projectRoot, "opencode.json"));
+  const target = await resolveTarget({ scope: "project", projectRoot: f.projectRoot });
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target });
+
+  await assert.rejects(() => engine.planInstall(["skill-toolkit", "libvirt-toolkit"]), /symlink/i);
+  assert.equal(await lstat(target.statePath).then(() => true, () => false), false);
+  assert.equal(await lstat(path.join(target.payloadRoot, "skills", "dotknewt-skill-toolkit", "SKILL.md")).then(() => true, () => false), false);
+  assert.equal(await readFile(outside, "utf8"), '{"consumer":true}\n');
 });
 
 test("unowned identical files conflict and owned local modifications block update/uninstall", async () => {

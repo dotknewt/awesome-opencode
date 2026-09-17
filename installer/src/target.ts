@@ -32,6 +32,28 @@ async function inspectConfigCandidate(candidate: string): Promise<boolean> {
   return true;
 }
 
+export async function resolveConfigurationPath(target: TargetPaths, ownedPaths: string[] = []): Promise<string> {
+  const supported = new Set(target.configCandidates.map((candidate) => path.resolve(candidate)));
+  const owned = [...new Set(ownedPaths.map((candidate) => path.resolve(candidate)))];
+  for (const candidate of owned) {
+    if (!supported.has(candidate)) throw new Error(`selected OpenCode config path is not a supported candidate: ${candidate}`);
+  }
+  if (owned.length > 1) throw new Error("selected toolkits use different configuration files");
+
+  const existing: string[] = [];
+  for (const candidate of target.configCandidates) if (await inspectConfigCandidate(candidate)) existing.push(path.resolve(candidate));
+  if (existing.length > 1) {
+    throw new Error(`multiple supported OpenCode config files found: ${existing.join(", ")}`);
+  }
+  if (owned.length === 1) {
+    if (existing.length === 1 && existing[0] !== owned[0]) {
+      throw new Error(`supported OpenCode config candidate changed after installation: ${existing[0]}`);
+    }
+    return owned[0]!;
+  }
+  return existing[0] ?? path.resolve(target.defaultConfigPath);
+}
+
 export async function resolveTarget(options: TargetOptions): Promise<TargetPaths> {
   const env = options.env ?? process.env;
   let payloadRoot: string;
@@ -56,11 +78,6 @@ export async function resolveTarget(options: TargetOptions): Promise<TargetPaths
     defaultConfigPath = path.join(payloadRoot, "opencode.json");
     candidates = [defaultConfigPath, path.join(payloadRoot, "opencode.jsonc")];
   }
-  const existing: string[] = [];
-  for (const candidate of candidates) if (await inspectConfigCandidate(candidate)) existing.push(candidate);
-  if (existing.length > 1) {
-    throw new Error(`multiple supported OpenCode config files found: ${existing.join(", ")}`);
-  }
   const stateRoot = path.join(payloadRoot, "awesome-opencode");
   return {
     scope: options.scope,
@@ -70,7 +87,7 @@ export async function resolveTarget(options: TargetOptions): Promise<TargetPaths
     statePath: path.join(stateRoot, "state.json"),
     journalPath: path.join(stateRoot, "journal.json"),
     lockPath: path.join(stateRoot, "lock"),
-    configPath: existing[0] ?? defaultConfigPath,
+    configPath: defaultConfigPath,
     configCandidates: candidates,
     defaultConfigPath,
   };

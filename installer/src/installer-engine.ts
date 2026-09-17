@@ -5,7 +5,7 @@ import { configEntry, parseConfig, removeConfigEntry, setConfigEntry, structural
 import { assertSafePath } from "./path-safety.js";
 import { loadToolkitPayload, type ToolkitPayload } from "./payload.js";
 import { readInstallerState, type InstallerState, type InstalledToolkit, type OwnedFile } from "./state.js";
-import type { TargetPaths } from "./target.js";
+import { resolveConfigurationPath, type TargetPaths } from "./target.js";
 import {
   applyTransaction,
   contentSnapshot,
@@ -163,38 +163,48 @@ export class InstallerEngine {
       const ownedByPath = new Map<string, OwnedFile>();
       for (const installed of Object.values(state.toolkits)) for (const file of installed.files) ownedByPath.set(file.path, file);
 
-      let configPath: string | undefined;
+      const payloads = new Map<string, ToolkitPayload>();
+      if (operation !== "uninstall") {
+        for (const name of names) payloads.set(name, await loadToolkitPayload(this.catalogRoot, name));
+      }
+      const ownedConfigPaths: string[] = [];
       for (const name of names) {
         const installed = state.toolkits[name];
         if (operation === "install" && installed) throw new Error(`${name} is already installed; use update`);
         if (operation !== "install" && !installed) throw new Error(`${name} is not installed`);
         if (installed) {
-          if (configPath && configPath !== installed.configPath) throw new Error("selected toolkits use different configuration files");
-          configPath = installed.configPath;
+          if (installed.configEntries.length > 0) ownedConfigPaths.push(installed.configPath);
           await this.verifyOwnedFiles(name, installed, reads);
         }
       }
-      configPath ??= this.target.configPath;
-      const selectedConfigPath = path.resolve(configPath);
-      const configCandidateSnapshots = new Map<string, Awaited<ReturnType<typeof snapshot>>>();
-      for (const candidate of this.target.configCandidates) {
-        const resolved = path.resolve(candidate);
-        const candidateSnapshot = await snapshot(candidate, true);
-        configCandidateSnapshots.set(resolved, candidateSnapshot);
-        if (resolved !== selectedConfigPath) {
-          reads.set(candidate, {
-            path: candidate,
-            expected: candidateSnapshot,
-            description: `verify alternate OpenCode configuration candidate ${candidate}`,
-          });
+      const configNeeded = ownedConfigPaths.length > 0 || [...payloads.values()].some((payload) => payload.manifest.mcp.length > 0);
+      let configPath: string | undefined;
+      let configBefore: Awaited<ReturnType<typeof snapshot>> | undefined;
+      let configSource: string | undefined;
+      let configDocument: ReturnType<typeof parseConfig> | undefined;
+      if (configNeeded) {
+        configPath = await resolveConfigurationPath(this.target, ownedConfigPaths);
+        const selectedConfigPath = path.resolve(configPath);
+        const configCandidateSnapshots = new Map<string, Awaited<ReturnType<typeof snapshot>>>();
+        for (const candidate of this.target.configCandidates) {
+          const resolved = path.resolve(candidate);
+          const candidateSnapshot = await snapshot(candidate, true);
+          configCandidateSnapshots.set(resolved, candidateSnapshot);
+          if (resolved !== selectedConfigPath) {
+            reads.set(candidate, {
+              path: candidate,
+              expected: candidateSnapshot,
+              description: `verify alternate OpenCode configuration candidate ${candidate}`,
+            });
+          }
         }
+        const unexpectedConfig = [...configCandidateSnapshots.entries()].find(([candidate, candidateSnapshot]) => candidate !== selectedConfigPath && candidateSnapshot.exists);
+        if (unexpectedConfig) throw new Error(`supported OpenCode config candidate changed after target resolution: ${unexpectedConfig[0]}`);
+        configBefore = configCandidateSnapshots.get(selectedConfigPath);
+        if (!configBefore) throw new Error(`selected OpenCode config path is not a supported candidate: ${configPath}`);
+        configSource = configBefore.exists ? configBefore.content ?? "" : "{}\n";
+        configDocument = parseConfig(configSource);
       }
-      const unexpectedConfig = [...configCandidateSnapshots.entries()].find(([candidate, candidateSnapshot]) => candidate !== selectedConfigPath && candidateSnapshot.exists);
-      if (unexpectedConfig) throw new Error(`supported OpenCode config candidate changed after target resolution: ${unexpectedConfig[0]}`);
-      const configBefore = configCandidateSnapshots.get(selectedConfigPath);
-      if (!configBefore) throw new Error(`selected OpenCode config path is not a supported candidate: ${configPath}`);
-      let configSource = configBefore.exists ? configBefore.content ?? "" : "{}\n";
-      let configDocument = parseConfig(configSource);
 
       for (const name of names) {
         const installed = state.toolkits[name];
@@ -203,9 +213,9 @@ export class InstallerEngine {
             changes.set(owned.path, { path: owned.path, before: await snapshot(owned.path), after: { exists: false }, description: `delete ${owned.path}` });
           }
           for (const owned of installed!.configEntries) {
-            const actual = configEntry(configDocument, owned.name);
+            const actual = configEntry(configDocument!, owned.name);
             if (!structurallyEqual(actual, owned.expected)) throw new Error(`modified owned configuration entry: ${owned.name}`);
-            configSource = removeConfigEntry(configSource, owned.name);
+            configSource = removeConfigEntry(configSource!, owned.name);
             configDocument = parseConfig(configSource);
           }
           delete next.toolkits[name];
@@ -213,7 +223,7 @@ export class InstallerEngine {
           continue;
         }
 
-        const payload = await loadToolkitPayload(this.catalogRoot, name);
+        const payload = payloads.get(name)!;
         const desiredFiles: OwnedFile[] = [];
         for (const file of payload.files) {
           const destination = path.resolve(this.target.payloadRoot, file.relativePath);
@@ -245,34 +255,41 @@ export class InstallerEngine {
         for (const contribution of payload.manifest.mcp) {
           const desired = managedMcp(payload, this.target, contribution);
           const prior = installed?.configEntries.find((entry) => entry.name === contribution.name);
-          const actual = configEntry(configDocument, contribution.name);
+          const actual = configEntry(configDocument!, contribution.name);
           if (prior) {
             if (!structurallyEqual(actual, prior.expected)) throw new Error(`modified owned configuration entry: ${contribution.name}`);
           } else if (actual !== undefined) {
             throw new Error(`unowned configuration conflict: ${contribution.name}`);
           }
           if (!structurallyEqual(actual, desired)) {
-            configSource = setConfigEntry(configSource, contribution.name, desired, !configBefore.exists);
+            configSource = setConfigEntry(configSource!, contribution.name, desired, !configBefore!.exists);
             configDocument = parseConfig(configSource);
           }
           desiredEntries.push({ name: contribution.name, expected: desired });
         }
         for (const stale of installed?.configEntries ?? []) {
           if (!desiredEntries.some((entry) => entry.name === stale.name)) {
-            const actual = configEntry(configDocument, stale.name);
+            const actual = configEntry(configDocument!, stale.name);
             if (!structurallyEqual(actual, stale.expected)) throw new Error(`modified owned configuration entry: ${stale.name}`);
-            configSource = removeConfigEntry(configSource, stale.name);
+            configSource = removeConfigEntry(configSource!, stale.name);
             configDocument = parseConfig(configSource);
           }
         }
-        next.toolkits[name] = { version: payload.manifest.version, files: desiredFiles, configPath, configEntries: desiredEntries };
+        next.toolkits[name] = {
+          version: payload.manifest.version,
+          files: desiredFiles,
+          configPath: configPath ?? installed?.configPath ?? this.target.configPath,
+          configEntries: desiredEntries,
+        };
         summary.push(`${operation} ${name}@${payload.manifest.version}`);
       }
 
-      if (configSource !== (configBefore.exists ? configBefore.content : "{}\n")) {
-        changes.set(configPath, { path: configPath, before: configBefore, after: contentSnapshot(configSource, configBefore.mode ?? 0o644, true), description: `edit OpenCode configuration ${configPath}` });
-      } else {
-        reads.set(configPath, { path: configPath, expected: configBefore, description: `verify OpenCode configuration ${configPath}` });
+      if (configNeeded) {
+        if (configSource !== (configBefore!.exists ? configBefore!.content : "{}\n")) {
+          changes.set(configPath!, { path: configPath!, before: configBefore!, after: contentSnapshot(configSource!, configBefore!.mode ?? 0o644, true), description: `edit OpenCode configuration ${configPath}` });
+        } else {
+          reads.set(configPath!, { path: configPath!, expected: configBefore!, description: `verify OpenCode configuration ${configPath}` });
+        }
       }
       const stateSource = `${JSON.stringify(next, null, 2)}\n`;
       if (stateBefore.content !== stateSource) {

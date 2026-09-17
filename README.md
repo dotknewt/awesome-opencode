@@ -100,6 +100,22 @@ target selector is required. `update` without names updates installed toolkits
 only. A dry run performs no recovery, locking, directory creation, config edit,
 or state write.
 
+Listing and operations whose selected toolkits only install files do not inspect,
+parse, snapshot, create, or edit any OpenCode configuration candidate. This lets
+file-only toolkits coexist with consumer-managed configuration symlinks and with
+configuration shapes that are irrelevant to the operation; those paths and their
+targets remain untouched. Configuration is required when any selected desired
+manifest contributes MCP entries or any selected installed record owns MCP
+entries, including removal of the last owned entry and a no-name update that
+selects an installed MCP toolkit.
+
+Whenever configuration is required, the strict boundary is unchanged: every
+supported candidate is checked, multiple candidates and malformed JSON/JSONC are
+refused, and symlinks or non-files are rejected rather than followed or replaced.
+A mixed file-and-MCP batch fails before payload or state writes when this check
+fails. Selecting only a file-only toolkit does not make an unselected installed
+MCP toolkit's configuration part of that operation.
+
 New configuration receives `$schema: "https://opencode.ai/config.json"`. The
 native entry is:
 

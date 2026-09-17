@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -180,4 +180,74 @@ test("CLI project-toolkit global lifecycle honors the isolated global selector",
   const uninstall = await runCli(["uninstall", "project-toolkit", "--global"], { env });
   assert.equal(uninstall.code, 0, uninstall.stderr);
   await assert.rejects(access(skillPath));
+});
+
+test("CLI skill-only global lifecycle ignores and preserves a dotfiles config symlink", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-cli-symlinked-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const xdg = path.join(root, "xdg");
+  const configDirectory = path.join(xdg, "opencode");
+  const dotfilesConfig = path.join(root, "dotfiles", "opencode.json");
+  const configPath = path.join(configDirectory, "opencode.json");
+  await mkdir(path.dirname(dotfilesConfig), { recursive: true });
+  await mkdir(configDirectory, { recursive: true });
+  await writeFile(dotfilesConfig, '{"theme":"consumer"}\n');
+  await symlink(dotfilesConfig, configPath);
+  const originalTarget = await readlink(configPath);
+  const originalBytes = await readFile(dotfilesConfig, "utf8");
+  const env = { ...process.env, XDG_CONFIG_HOME: xdg, HOME: path.join(root, "home") };
+
+  const dryRun = await runCli(["install", "project-toolkit", "--global", "--dry-run"], { env });
+  assert.equal(dryRun.code, 0, dryRun.stderr);
+  assert.match(dryRun.stdout, /DRY RUN/i);
+  await assert.rejects(access(path.join(configDirectory, "awesome-opencode")));
+
+  const install = await runCli(["install", "project-toolkit", "--global"], { env });
+  assert.equal(install.code, 0, install.stderr);
+  const skillPath = path.join(configDirectory, "skills", "dotknewt-handling-todos", "SKILL.md");
+  const installedSkill = await readFile(skillPath, "utf8");
+  assert.match(installedSkill, /name: dotknewt-handling-todos/);
+
+  const list = await runCli(["list", "--global"], { env });
+  assert.equal(list.code, 0, list.stderr);
+  assert.match(list.stdout, /project-toolkit\s+0\.1\.0\s+0\.1\.0/);
+  assert.equal((await runCli(["update", "project-toolkit", "--global"], { env })).code, 0);
+  assert.equal((await runCli(["update", "--global"], { env })).code, 0);
+
+  await writeFile(skillPath, `${installedSkill}\nLocal consumer edit.\n`);
+  const conflict = await runCli(["update", "project-toolkit", "--global"], { env });
+  assert.equal(conflict.code, 1);
+  assert.match(conflict.stderr, /modified.*owned/i);
+  await writeFile(skillPath, installedSkill);
+
+  const uninstall = await runCli(["uninstall", "project-toolkit", "--global"], { env });
+  assert.equal(uninstall.code, 0, uninstall.stderr);
+  assert.equal((await lstat(configPath)).isSymbolicLink(), true);
+  assert.equal(await readlink(configPath), originalTarget);
+  assert.equal(await readFile(dotfilesConfig, "utf8"), originalBytes);
+  await assert.rejects(access(path.join(configDirectory, "opencode.jsonc")));
+});
+
+test("CLI skill-only project lifecycle ignores and preserves a dotfiles config symlink", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-cli-project-symlinked-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const project = path.join(root, "project");
+  const dotfilesConfig = path.join(root, "dotfiles", "opencode.jsonc");
+  const configPath = path.join(project, "opencode.jsonc");
+  await mkdir(path.dirname(dotfilesConfig), { recursive: true });
+  await mkdir(project);
+  await writeFile(dotfilesConfig, '{"theme":"consumer-project"}\n');
+  await symlink(dotfilesConfig, configPath);
+
+  assert.equal((await runCli(["install", "project-toolkit", "--project", project, "--dry-run"])).code, 0);
+  await assert.rejects(access(path.join(project, ".opencode")));
+  assert.equal((await runCli(["install", "project-toolkit", "--project", project])).code, 0);
+  assert.equal((await runCli(["list", "--project", project])).code, 0);
+  assert.equal((await runCli(["update", "--project", project])).code, 0);
+  assert.equal((await runCli(["uninstall", "project-toolkit", "--project", project])).code, 0);
+
+  assert.equal((await lstat(configPath)).isSymbolicLink(), true);
+  assert.equal(await readlink(configPath), dotfilesConfig);
+  assert.equal(await readFile(dotfilesConfig, "utf8"), '{"theme":"consumer-project"}\n');
+  await assert.rejects(access(path.join(project, "opencode.json")));
 });
