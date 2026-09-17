@@ -24,6 +24,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "source.xml"
 REAL_DOMAIN_FIXTURE = Path(__file__).parent / "fixtures" / "ubuntu-dev-template.xml"
 CAPABILITIES = Path(__file__).parent / "fixtures" / "capabilities.xml"
 SOURCE_UUID = "11111111-1111-1111-1111-111111111111"
+SourceSnapshot = tuple[bytes, bytes, bytes, str]
 
 
 class LifecycleTests(unittest.TestCase):
@@ -53,6 +54,18 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(code, caught.exception.code)
         return caught.exception
 
+    def source_snapshot(self) -> SourceSnapshot:
+        source = self.fake.domains["source-vm"]
+        return (
+            source["xml"].encode("utf-8"),
+            self.source_disk.read_bytes(),
+            self.source_nvram.read_bytes(),
+            source["state"],
+        )
+
+    def assert_source_unchanged(self, expected: SourceSnapshot) -> None:
+        self.assertEqual(expected, self.source_snapshot())
+
     def test_host_info_and_lists_are_json_serializable(self):
         self.fake.capabilities_xml = CAPABILITIES.read_text(encoding="utf-8")
         result = self.service.host_info()
@@ -69,6 +82,7 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual({"source-vm"}, names)
 
     def test_publication_flattens_to_new_owned_immutable_version(self):
+        source_before = self.source_snapshot()
         template = self.publish()
         disk = Path(template["disk"])
         self.assertTrue(disk.is_file())
@@ -80,13 +94,26 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(SOURCE_UUID, metadata["source_uuid"])
         published_xml = ET.fromstring(Path(template["xml"]).read_text(encoding="utf-8"))
         self.assertEqual(template["nvram"], published_xml.find("./os/nvram/source").get("file"))
+        self.assert_source_unchanged(source_before)
 
     def test_publication_rejects_running_or_managed_saved_source(self):
-        self.fake.domains["source-vm"]["state"] = "running"
-        self.assert_error("invalid_state", self.publish)
-        self.fake.domains["source-vm"]["state"] = "shut off"
-        self.fake.domains["source-vm"]["managed_save"] = True
-        self.assert_error("managed_save_present", self.publish)
+        cases = (
+            ("running", False, "invalid_state"),
+            ("shut off", True, "managed_save_present"),
+        )
+        for state, managed_save, code in cases:
+            with self.subTest(code=code):
+                self.fake.domains["source-vm"]["state"] = state
+                self.fake.domains["source-vm"]["managed_save"] = managed_save
+                source_before = self.source_snapshot()
+                self.fake.calls.clear()
+
+                self.assert_error(code, self.publish)
+
+                self.assert_source_unchanged(source_before)
+                self.assertFalse((self.root / "templates" / "ubuntu-dev-template" / "v1").exists())
+                self.assertFalse(self.service.store.journal_path.exists())
+                self.assertFalse(any(call[:2] == ["qemu-img", "convert"] for call in self.fake.calls))
 
     def test_managed_save_probe_distinguishes_absence_from_inspection_failure(self):
         self.create()
@@ -106,7 +133,13 @@ class LifecycleTests(unittest.TestCase):
         self.fake.domains["source-vm"]["xml"] = self.fake.domains["source-vm"]["xml"].replace(
             str(self.source_disk), str(Path(self.temp.name) / "missing.qcow2")
         )
+        source_before = self.source_snapshot()
+        self.fake.calls.clear()
         self.assert_error("unsafe_source", self.publish)
+        self.assert_source_unchanged(source_before)
+        self.assertFalse((self.root / "templates" / "ubuntu-dev-template" / "v1").exists())
+        self.assertFalse(self.service.store.journal_path.exists())
+        self.assertFalse(any(call[:2] == ["qemu-img", "convert"] for call in self.fake.calls))
         self.fake = FakeRunner(FIXTURE.read_text(encoding="utf-8"), self.source_disk, self.source_nvram)
         self.service = Lifecycle(self.root, runner=self.fake)
         self.publish()
@@ -117,8 +150,10 @@ class LifecycleTests(unittest.TestCase):
         self.fake.domains["source-vm"]["xml"] = self.fake.domains["source-vm"]["xml"].replace(
             str(self.source_nvram), str(missing)
         )
+        source_before = self.source_snapshot()
         self.fake.calls.clear()
         self.assert_error("unsafe_source", self.publish)
+        self.assert_source_unchanged(source_before)
         self.assertFalse((self.root / "templates" / "ubuntu-dev-template" / "v1").exists())
         self.assertFalse(self.service.store.journal_path.exists())
         self.assertFalse(any(call[:2] == ["qemu-img", "convert"] for call in self.fake.calls))
@@ -246,7 +281,12 @@ class LifecycleTests(unittest.TestCase):
         self.assertIsNotNone(clone.find("./devices/watchdog[@model='itco']"))
 
     def test_create_uses_linked_clone_fresh_identity_and_independent_nvram(self):
+        source_before = self.source_snapshot()
         template = self.publish()
+        published_before = {
+            field: Path(template[field]).read_bytes()
+            for field in ("disk", "nvram", "xml")
+        }
         vm = self.service.vm_create("work-a", "ubuntu-dev-template", "v1")
         self.assertNotEqual(SOURCE_UUID, vm["uuid"])
         self.assertEqual(template["disk"], self.fake.backing_for(vm["disk"]))
@@ -258,6 +298,12 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("aa:bb:cc", xml)
         root = ET.fromstring(xml)
         self.assertEqual(vm["nvram"], root.find("./os/nvram/source").get("file"))
+        Path(vm["nvram"]).write_bytes(b"working firmware state")
+        self.assertEqual(
+            published_before,
+            {field: Path(template[field]).read_bytes() for field in ("disk", "nvram", "xml")},
+        )
+        self.assert_source_unchanged(source_before)
 
     def test_create_provisions_overlay_before_define_and_preserves_backing(self):
         guest_access = FakeGuestAccess()
@@ -472,9 +518,29 @@ class LifecycleTests(unittest.TestCase):
                 self.assert_error("invalid_argument", self.service.vm_shutdown, "work-a", timeout_seconds=timeout)
         self.assertEqual("running", self.fake.domains["work-a"]["state"])
 
-    def test_delete_rejects_foreign_domain_and_drift(self):
+    def test_working_vm_mutators_reject_unmanaged_source_without_side_effects(self):
+        source_before = self.source_snapshot()
+        mutators = (
+            self.service.vm_start,
+            self.service.vm_shutdown,
+            self.service.vm_force_stop,
+            self.service.vm_delete,
+        )
+        for mutator in mutators:
+            with self.subTest(mutator=mutator.__name__):
+                self.fake.calls.clear()
+                self.assert_error("not_managed", mutator, "source-vm")
+                self.assert_source_unchanged(source_before)
+                self.assertFalse(self.service.store.journal_path.exists())
+                self.assertFalse(
+                    any(
+                        len(call) > 3 and call[3] in {"start", "shutdown", "destroy", "undefine"}
+                        for call in self.fake.calls
+                    )
+                )
+
+    def test_delete_rejects_managed_domain_identity_drift(self):
         vm = self.create()
-        self.assert_error("not_managed", self.service.vm_delete, "source-vm")
         xml = self.fake.domains["work-a"]["xml"].replace(vm["uuid"], "99999999-9999-9999-9999-999999999999")
         self.fake.domains["work-a"]["xml"] = xml
         self.assert_error("ownership_drift", self.service.vm_delete, "work-a")
@@ -493,7 +559,13 @@ class LifecycleTests(unittest.TestCase):
         self.assert_error("ownership_drift", self.service.vm_start, "work-a")
 
     def test_delete_removes_only_managed_domain_and_directory(self):
+        source_before = self.source_snapshot()
         vm = self.create()
+        template = self.service.template_list()["templates"][0]
+        published_before = {
+            field: Path(template[field]).read_bytes()
+            for field in ("disk", "nvram", "xml")
+        }
         outside = Path(self.temp.name) / "keep-me"
         outside.write_text("safe", encoding="utf-8")
         removed = self.service.vm_delete("work-a")
@@ -501,14 +573,30 @@ class LifecycleTests(unittest.TestCase):
         self.assertNotIn("work-a", self.fake.domains)
         self.assertFalse(Path(vm["disk"]).parent.exists())
         self.assertEqual("safe", outside.read_text(encoding="utf-8"))
+        self.assertEqual(
+            published_before,
+            {field: Path(template[field]).read_bytes() for field in ("disk", "nvram", "xml")},
+        )
+        self.assert_source_unchanged(source_before)
 
     def test_delete_filesystem_failure_after_undefine_retains_recovery_journal(self):
+        source_before = self.source_snapshot()
         vm = self.create()
+        template = self.service.template_list()["templates"][0]
+        published_before = {
+            field: Path(template[field]).read_bytes()
+            for field in ("disk", "nvram", "xml")
+        }
         with patch("libvirt_mcp.lifecycle.shutil.rmtree", side_effect=OSError("injected remove failure")):
             error = self.assert_error("recovery_required", self.service.vm_delete, "work-a")
         self.assertNotIn("work-a", self.fake.domains)
         self.assertTrue(Path(vm["disk"]).exists())
         self.assertTrue(Path(error.details["journal"]).exists())
+        self.assertEqual(
+            published_before,
+            {field: Path(template[field]).read_bytes() for field in ("disk", "nvram", "xml")},
+        )
+        self.assert_source_unchanged(source_before)
 
     def test_template_registry_failure_after_removal_retains_recovery_journal(self):
         template = self.publish()
@@ -533,9 +621,11 @@ class LifecycleTests(unittest.TestCase):
         self.assertTrue(self.service.store.journal_path.exists())
 
     def test_partial_publication_failure_keeps_journal_and_never_deletes_source(self):
+        source_before = self.source_snapshot()
         self.fake.fail[("qemu-img", "convert")] = "conversion failed"
         error = self.assert_error("recovery_required", self.publish)
-        self.assertTrue(self.source_disk.exists())
+        self.assertTrue(Path(error.details["journal"]).is_file())
+        self.assert_source_unchanged(source_before)
         self.assertIn(str(self.root / "templates" / "ubuntu-dev-template" / "v1" / "disk.qcow2"), error.details["resources"])
 
     def test_template_remove_checks_metadata_and_real_backing_dependencies(self):
@@ -554,13 +644,23 @@ class LifecycleTests(unittest.TestCase):
         self.assert_error("inspection_incomplete", self.service.template_remove, "ubuntu-dev-template", "v1")
 
     def test_partial_create_failure_retains_resources_and_blocks_mutations(self):
-        self.publish()
+        source_before = self.source_snapshot()
+        template = self.publish()
+        published_before = {
+            field: Path(template[field]).read_bytes()
+            for field in ("disk", "nvram", "xml")
+        }
         self.fake.fail[("virsh", "--connect", "qemu:///session", "define")] = "define failed"
         error = self.assert_error("recovery_required", self.service.vm_create, "work-a", "ubuntu-dev-template", "v1")
         self.assertTrue(Path(error.details["journal"]).is_file())
         self.assertTrue(any(Path(path).exists() for path in error.details["resources"]))
         blocked = self.assert_error("recovery_required", self.service.template_remove, "ubuntu-dev-template", "v1")
         self.assertEqual(error.details["operation_id"], blocked.details["operation_id"])
+        self.assertEqual(
+            published_before,
+            {field: Path(template[field]).read_bytes() for field in ("disk", "nvram", "xml")},
+        )
+        self.assert_source_unchanged(source_before)
 
     def test_create_successful_define_without_readable_domain_requires_recovery(self):
         self.publish()
