@@ -36,5 +36,5 @@ test("installed skills are discoverable by an optional isolated OpenCode CLI", {
     return;
   }
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /discovered two native skills/);
+  assert.match(result.stdout, /discovered three native skills/);
 });
