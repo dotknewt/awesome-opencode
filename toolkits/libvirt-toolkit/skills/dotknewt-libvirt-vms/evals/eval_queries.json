@@ -1,0 +1,11 @@
+[
+  { "query": "Use this existing libvirt VM as the source, publish it, create an isolated working clone, and run the repository tests only on that clone.", "should_trigger": true },
+  { "query": "The supplied source VM is running. Shut it down if needed, clone it, and execute the test suite.", "should_trigger": true },
+  { "query": "This source needs guest preparation before publication; protect the original and tell me what separately authorized copy workflow is required.", "should_trigger": true },
+  { "query": "vm_create timed out after defining something. Work out which clone-owned resources may be recovered without touching the source or published backing.", "should_trigger": true },
+  { "query": "The candidate SSH endpoint resolves to the source VM, not the new working clone. Decide whether testing can continue.", "should_trigger": true },
+  { "query": "Delete the failed test clone and its recovery artifacts while preserving the supplied source and immutable template backing.", "should_trigger": true },
+  { "query": "List the domains in my qemu session and report their current power states.", "should_trigger": true },
+  { "query": "Copy this local directory to an already authorized non-libvirt SSH host and run pytest there.", "should_trigger": false },
+  { "query": "Explain the difference between a unit test and an integration test without using virtualization.", "should_trigger": false }
+]

@@ -1,6 +1,6 @@
 ---
 name: dotknewt-libvirt-vms
-description: Use when preparing or publishing Ubuntu, Debian 13, or CachyOS QCOW2 templates, managing libvirt working VMs through the dotknewt-libvirt MCP server, or continuing a project-in-VM request into provider networking and a guest-access handoff.
+description: Use when preparing or publishing Ubuntu, Debian 13, or CachyOS QCOW2 templates, managing libvirt working VMs, protecting a supplied source while tests run on an isolated clone, or continuing a project-in-VM request into provider networking and guest access.
 ---
 
 # Managing Libvirt VMs
@@ -47,6 +47,60 @@ For graceful shutdown, call `vm_shutdown` with a bounded wait. A timeout is not
 proof that shutdown failed or succeeded, and the operation never escalates to a
 force-stop. Call `vm_inspect` again. Continue with a shut-off-only operation only
 after the VM reports shut off; ask separately before `vm_force_stop`.
+
+## Clone-only testing policy
+
+When a request supplies an existing VM or template as the basis for testing,
+protect that source for the complete workflow. Resolve it from the explicit
+request and context, then corroborate its domain UUID, host, owner, session,
+publication metadata, and disk/NVRAM lineage. Keep the resolved identity in the
+workflow record. A name or suffix is never source or clone authorization; a
+managed, mutable VM explicitly supplied as the source remains protected even
+when ordinary runtime ownership checks would permit changing it.
+
+Only read-only inspection and `template_publish` may target the protected
+source. Never propose source start, shutdown, force-stop, configuration edits,
+credential or guest provisioning, QGA/SSH/guest execution, snapshot operations,
+deletion, or recovery. Fake or real runtime permission for those operations does
+not override this policy. Publication may inspect and copy a verified prepared,
+supported, shut-off source with no managed-save state, but it must preserve the
+source XML, power state, disk, NVRAM, identity, and recorded hashes. A running,
+managed-saved, unsafe, unsupported, ambiguous, or failed-to-publish source blocks
+the testing workflow. Report the failed precondition; do not remediate the
+source, substitute shell commands, or infer safety from its name.
+
+If the source needs preparation, stop the testing workflow without booting or
+changing it. Preparation requires separate explicit authorization for a
+non-testing workflow. Before any boot or mutation, that workflow must create and
+verify an independent full copy with a distinct UUID and MAC addresses, a fully
+independent disk with no source backing relationship, and independent NVRAM when
+applicable. Preserve and recheck the supplied source identity and XML/disk/NVRAM
+hashes, and record `source -> preparation copy -> published template/version`
+lineage. Renaming, relabeling, or recording the supplied source under a new role
+is not a copy. The preparation copy may be published after preparation, but it
+is not the final test VM.
+
+Testing requires publication followed by a distinct `vm_create` working clone.
+Before any clone power, endpoint setup, guest access, transfer, execution,
+recovery, or cleanup, verify all of the following:
+
+- The lineage is `protected source -> published template/version -> vm_create
+  clone`, with any independently authorized preparation copy recorded between
+  source and publication.
+- The clone has a fresh domain UUID and MAC addresses, an exclusive
+  toolkit-owned overlay backed by the exact immutable publication with no
+  configuration or backing drift, and an independent writable NVRAM copy when
+  applicable.
+- Endpoint provenance and reinspection bind the candidate endpoint to the clone
+  UUID, not to the source, preparation copy, publication, or a sibling VM.
+
+Missing or mismatched evidence blocks testing. An uncertain `vm_create` result
+is not a clone: preserve the pending credential, do not guess a UUID or retry
+blindly, and restrict inspection or recovery to identified candidate clone-owned
+resources and its journal. Cleanup and recovery may target only the verified
+clone and its owned overlay, NVRAM, metadata, and journal. Preserve the protected
+source and immutable published image/NVRAM backing, including when tests fail or
+clone creation/deletion is interrupted.
 
 ### Creation-time guest access
 
