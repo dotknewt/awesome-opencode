@@ -22,7 +22,7 @@ VM. Restart OpenCode after an applied install, update, or uninstall.
 
 ## CLI
 
-Install the package by your normal npm package source, then use an absolute
+Install the package by your normal npm package source, (eg. `NPM_CONFIG_ALLOW_GIT=root npm install https://github.com/dotknewt/awesome-opencode.git`) then use an absolute
 target path:
 
 ```text
