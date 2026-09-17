@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "name": "libvirt-toolkit",
+  "namespace": "dotknewt",
+  "version": "0.1.0",
+  "description": "Safe local libvirt lifecycle, template, snapshot, and verified guest-access workflows for OpenCode.",
+  "license": "MIT",
+  "exports": [
+    {
+      "kind": "skill",
+      "source": "skills/dotknewt-libvirt-vms",
+      "destination": "skills/dotknewt-libvirt-vms"
+    },
+    {
+      "kind": "skill",
+      "source": "skills/dotknewt-guest-access",
+      "destination": "skills/dotknewt-guest-access"
+    },
+    {
+      "kind": "asset",
+      "source": "mcp/libvirt",
+      "destination": "mcp/libvirt"
+    }
+  ],
+  "requiredSkills": [
+    "dotknewt-libvirt-vms",
+    "dotknewt-guest-access"
+  ],
+  "mcp": [
+    {
+      "name": "dotknewt-libvirt",
+      "type": "local",
+      "command": ["uv", "run", "--script"],
+      "entrypoint": "mcp/libvirt/server.py",
+      "enabled": true
+    }
+  ],
+  "dependencies": {
+    "platforms": ["linux"],
+    "executables": ["uv", "virsh", "qemu-img"]
+  }
+}

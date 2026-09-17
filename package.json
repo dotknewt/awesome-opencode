@@ -1,0 +1,49 @@
+{
+  "name": "awesome-opencode",
+  "version": "0.1.0",
+  "description": "Native OpenCode toolkit catalog and installer foundation",
+  "type": "module",
+  "bin": {
+    "awesome-opencode": "dist/installer/src/cli.js"
+  },
+  "files": [
+    "dist/installer/src",
+    "dist/schemas",
+    "schemas",
+    "toolkits/**",
+    "!toolkits/**/tests/**",
+    "!toolkits/**/evals/**",
+    "!toolkits/**/__pycache__/**",
+    "!toolkits/**/*.py[cod]",
+    "README.md",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "docs/architecture.md",
+    "docs/authoring.md",
+    "docs/compatibility.md",
+    "docs/decisions/*.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests",
+    "test:installer": "npm run build && node --test dist/tests/toolkit-manifest.test.js dist/tests/installer-engine.test.js dist/tests/cli.test.js",
+    "test:package": "npm run build && node --test dist/tests/package-lifecycle.test.js",
+    "test:opencode:schema": "npm run build && node scripts/check-opencode.mjs schema",
+    "test:opencode:discovery": "npm run build && node scripts/check-opencode.mjs discovery",
+    "validate": "npm run build && node dist/installer/src/cli.js validate",
+    "prepack": "npm run build && node dist/installer/src/cli.js validate"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ajv": "8.20.0",
+    "jsonc-parser": "3.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.5.2",
+    "typescript": "5.9.2"
+  }
+}

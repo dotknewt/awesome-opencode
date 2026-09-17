@@ -1,0 +1,18 @@
+<capabilities>
+  <host>
+    <uuid>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</uuid>
+    <cpu>
+      <arch>x86_64</arch>
+      <model>Skylake-Client-IBRS</model>
+      <vendor>Intel</vendor>
+      <topology sockets="1" dies="1" cores="4" threads="2"/>
+      <feature name="vmx"/>
+      <feature name="ssse3"/>
+    </cpu>
+    <power_management>
+      <suspend_mem/>
+      <suspend_disk/>
+    </power_management>
+    <iommu support="yes"/>
+  </host>
+</capabilities>

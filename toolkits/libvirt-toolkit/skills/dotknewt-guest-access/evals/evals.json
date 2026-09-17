@@ -1,0 +1,43 @@
+{
+  "skill_name": "dotknewt-guest-access",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Use Scenario A from the attached handoff. Continue the existing dev-clone workflow through copying the project and running its unit tests. Explain what is verified, what is blocked, and the next safe action; do not run live commands.",
+      "expected_output": "A staged access plan that does not mistake lifecycle MCP or root QGA success for regular-user access. It identifies the missing reachable endpoint/passt forward as a provider-stage blocker, preserves unknown SSH and clone identity claims, and leaves transfer and tests untested until access exists.",
+      "files": ["evals/files/access-scenarios.md"],
+      "assertions": [
+        "The response inventories the available lifecycle MCP, QGA diagnostics, and client SSH/transfer tools before concluding what access capability is missing",
+        "The response treats root QGA evidence as separate from SSH authentication and normal-user execution rather than using it as proof that the developer workflow works",
+        "The response identifies that no reachable SSH endpoint or passt forward is currently evidenced and requests the narrow provider/network action needed before authentication",
+        "The response reports lifecycle, guest prerequisites, SSH authentication, clone identity, transfer, and requested execution separately without claiming the tests completed"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Use Scenario B from the attached handoff. SSH to the local libvirt qa-vm at its guest-agent-reported 192.168.0.20 address is refused from the workstation. Diagnose the route evidence and tell me what to verify next before I copy anything; do not run live commands.",
+      "expected_output": "A diagnosis that recognizes `ip route get 192.168.0.20` classifies the candidate as local on `dev lo` at the connection-origin workstation, so the refused TCP probe did not reach or prove failure of guest sshd. It keeps partial QGA prerequisites, SSH, and transfer untested and requires provider/network inspection plus a verified guest endpoint before host-key verification or authentication.",
+      "files": ["evals/files/access-scenarios.md"],
+      "assertions": [
+        "The response treats the workstation as both the libvirt host and connection origin while keeping qa-vm distinct; remote-host separation is not invented for this scenario",
+        "The response interprets route class `local` on `dev lo` as host-local resolution and does not treat the refused workstation TCP probe as evidence that guest sshd failed",
+        "The response requires provider/network inspection and a verified guest endpoint before host-key verification, authentication, or transfer",
+        "The response keeps guest prerequisites, SSH authentication, and transfer untested; QGA sshd evidence remains partial and does not verify the intended qa account, home, or tools"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Use Scenario C from the attached handoff. Give me the safe workflow to copy parser to the VM on the remote libvirt host and run `python -m pytest -q`; do not execute anything.",
+      "expected_output": "A parameterized workflow that explains remote-host loopback, uses the approved tunnel or an execution origin on hv-east, verifies the supplied host-key fingerprint through its trusted source, honors SSH config/agent behavior, confirms the dev account/home/cwd, verifies the transfer destination, and records the test exit result by stage.",
+      "files": ["evals/files/access-scenarios.md"],
+      "assertions": [
+        "The response does not treat 127.0.0.1 on hv-east as the laptop's loopback and selects an explicit approved tunnel/jump or remote execution origin",
+        "The response treats ssh-keyscan, if used, only as candidate-key collection and compares the fingerprint with the trusted operator-console evidence before authentication",
+        "The response preserves existing SSH config and agent behavior unless evidence requires an override, then verifies the intended dev user, guest home, and explicit project cwd",
+        "The response verifies the transferred destination and reports the requested command, execution location/account, cwd, exit status, and relevant output separately from earlier stages",
+        "The response marks source/sibling SSH identity comparison untested rather than fabricating clone-identity evidence",
+        "The response does not stop authentication, transfer, or requested execution solely because source/sibling comparison is unavailable; it treats that uncertainty as a gate only if the user or an applicable policy explicitly requires clone-uniqueness proof"
+      ]
+    }
+  ]
+}

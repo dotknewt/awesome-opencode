@@ -1,0 +1,52 @@
+<domain type="kvm">
+  <name>source-vm</name>
+  <uuid>11111111-1111-1111-1111-111111111111</uuid>
+  <metadata><fixture xmlns="https://dotknewt.dev/libvirt-test">realistic-dumpxml</fixture></metadata>
+  <memory unit="KiB">2097152</memory>
+  <currentMemory unit="KiB">2097152</currentMemory>
+  <vcpu placement="static" current="2">2</vcpu>
+  <resource><partition>/machine</partition></resource>
+  <os firmware="efi">
+    <type arch="x86_64" machine="q35">hvm</type>
+    <loader readonly="yes" type="pflash">/usr/share/OVMF/OVMF_CODE.fd</loader>
+    <nvram type="file" template="/usr/share/OVMF/OVMF_VARS.fd"><source file="/SOURCE/NVRAM.fd"/></nvram>
+  </os>
+  <features><acpi/><apic/><vmport state="off"/></features>
+  <clock offset="utc"/>
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>destroy</on_crash>
+  <pm><suspend-to-mem enabled="no"/><suspend-to-disk enabled="no"/></pm>
+  <sysinfo type="smbios"><system><entry name="uuid">11111111-1111-1111-1111-111111111111</entry></system></sysinfo>
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+    <disk type="file" device="disk">
+      <driver name="qemu" type="qcow2"/>
+      <source file="/SOURCE/source.qcow2"/>
+      <target dev="vda" bus="virtio"/>
+    </disk>
+    <disk type="file" device="cdrom">
+      <driver name="qemu" type="raw"/>
+      <source file="/SOURCE/installer.iso"/>
+      <target dev="sda" bus="sata"/>
+      <readonly/>
+    </disk>
+    <interface type="network">
+      <mac address="52:54:00:aa:bb:cc"/>
+      <source network="default"/>
+      <model type="virtio"/>
+    </interface>
+    <controller type="pci" index="0" model="pcie-root"/>
+    <controller type="usb" index="0" model="qemu-xhci"/>
+    <serial type="pty"><source path="/dev/pts/7"/><target type="isa-serial" port="0"/></serial>
+    <console type="pty"><source path="/dev/pts/7"/><target type="serial" port="0"/></console>
+    <channel type="unix"><source mode="bind" path="/run/libvirt/source.sock"/><target type="virtio" name="org.qemu.guest_agent.0"/></channel>
+    <input type="tablet" bus="usb"/>
+    <input type="keyboard" bus="ps2"/>
+    <graphics type="spice" autoport="yes"><listen type="socket" socket="/run/libvirt/source-spice.sock"/></graphics>
+    <video><model type="virtio" heads="1" primary="yes"/></video>
+    <memballoon model="virtio"/>
+    <rng model="virtio"><backend model="random">/dev/urandom</backend></rng>
+    <panic model="isa"/>
+  </devices>
+</domain>
