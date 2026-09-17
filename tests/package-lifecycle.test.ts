@@ -137,6 +137,9 @@ test("real npm tarball remains functional after disposable package source remova
       "toolkits/libvirt-toolkit/skills/dotknewt-guest-access/scripts/project_ssh.py",
     ),
   );
+  assert.ok(
+    packedPaths.includes("toolkits/project-toolkit/skills/dotknewt-handling-todos/SKILL.md"),
+  );
   assert.equal(packedPaths.some((entry) => /(^|\/)tests\//.test(entry)), false);
   assert.equal(packedPaths.some((entry) => /(^|\/)evals\//.test(entry)), false);
   assert.equal(
@@ -169,6 +172,8 @@ test("real npm tarball remains functional after disposable package source remova
   assert.equal(validate.code, 0, validate.stderr);
   const projectInstall = await run(["install", "libvirt-toolkit", "--project", project]);
   assert.equal(projectInstall.code, 0, projectInstall.stderr);
+  const projectToolkitInstall = await run(["install", "project-toolkit", "--project", project]);
+  assert.equal(projectToolkitInstall.code, 0, projectToolkitInstall.stderr);
   const projectUpdate = await run(["update", "--project", project]);
   assert.equal(projectUpdate.code, 0, projectUpdate.stderr);
 
@@ -179,7 +184,14 @@ test("real npm tarball remains functional after disposable package source remova
   };
   const globalInstall = await run(["install", "libvirt-toolkit", "--global"], globalEnv);
   assert.equal(globalInstall.code, 0, globalInstall.stderr);
-  const globalUninstall = await run(["uninstall", "libvirt-toolkit", "--global"], globalEnv);
+  const globalProjectToolkitInstall = await run(["install", "project-toolkit", "--global"], globalEnv);
+  assert.equal(globalProjectToolkitInstall.code, 0, globalProjectToolkitInstall.stderr);
+  const globalUpdate = await run(["update", "--global"], globalEnv);
+  assert.equal(globalUpdate.code, 0, globalUpdate.stderr);
+  const globalUninstall = await run(
+    ["uninstall", "libvirt-toolkit", "project-toolkit", "--global"],
+    globalEnv,
+  );
   assert.equal(globalUninstall.code, 0, globalUninstall.stderr);
 
   const configPath = path.join(project, "opencode.json");
@@ -192,6 +204,14 @@ test("real npm tarball remains functional after disposable package source remova
     const source = await readFile(skillFile, "utf8");
     assert.match(source, new RegExp(`name: ${skill}`));
   }
+  const todoSkill = path.join(
+    project,
+    ".opencode",
+    "skills",
+    "dotknewt-handling-todos",
+    "SKILL.md",
+  );
+  assert.match(await readFile(todoSkill, "utf8"), /name: dotknewt-handling-todos/);
 
   const helper = path.join(
     project,
@@ -284,8 +304,13 @@ test("real npm tarball remains functional after disposable package source remova
   const list = await run(["list", "--project", project]);
   assert.equal(list.code, 0, list.stderr);
   assert.match(list.stdout, /libvirt-toolkit\s+-\s+0\.2\.0/);
-  const uninstall = await run(["uninstall", "libvirt-toolkit", "--project", project]);
+  assert.match(list.stdout, /project-toolkit\s+-\s+0\.1\.0/);
+  const uninstall = await run(
+    ["uninstall", "libvirt-toolkit", "project-toolkit", "--project", project],
+  );
   assert.equal(uninstall.code, 0, uninstall.stderr);
   assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.2\.0/);
+  assert.match(uninstall.stdout, /uninstall project-toolkit@0\.1\.0/);
   await assert.rejects(access(server));
+  await assert.rejects(access(todoSkill));
 });

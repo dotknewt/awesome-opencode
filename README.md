@@ -1,8 +1,14 @@
 # awesome-opencode
 
-`awesome-opencode` distributes self-contained, native OpenCode toolkits. The
-initial `libvirt-toolkit` installs two namespaced skills and a local Python MCP
-server for a bounded `qemu:///session` workflow.
+`awesome-opencode` distributes self-contained, native OpenCode toolkits.
+
+## Available toolkits
+
+- `project-toolkit` installs the on-demand `dotknewt-handling-todos` skill for
+  TODO and backlog workflows. It does not inject always-loaded rules or change a
+  consumer's `AGENTS.md`.
+- `libvirt-toolkit` installs two namespaced skills and a local Python MCP server
+  for a bounded `qemu:///session` workflow.
 
 ## Requirements
 
@@ -72,6 +78,21 @@ awesome-opencode uninstall libvirt-toolkit --project /absolute/project
 awesome-opencode install libvirt-toolkit --global
 ```
 
+Install the project workflow skill with either target selector:
+
+```sh
+awesome-opencode install project-toolkit --project /absolute/project
+awesome-opencode update project-toolkit --project /absolute/project
+awesome-opencode uninstall project-toolkit --project /absolute/project
+awesome-opencode install project-toolkit --global
+awesome-opencode update project-toolkit --global
+awesome-opencode uninstall project-toolkit --global
+```
+
+Restart OpenCode after an applied install, update, or uninstall. The installed
+`dotknewt-handling-todos` skill is discoverable and loaded on demand when its
+TODO/backlog trigger matches; it is not an always-loaded rule.
+
 `--project` resolves relative input against the current directory, but absolute
 input is recommended for auditable automation. `--global` uses
 `$XDG_CONFIG_HOME/opencode`, falling back to `~/.config/opencode`. Exactly one
@@ -133,6 +154,7 @@ installer-owned or covered by native discovery acceptance.
 - [Contributing](CONTRIBUTING.md)
 - [Design decisions](docs/decisions/)
 - [Libvirt toolkit operation](toolkits/libvirt-toolkit/README.md)
+- [Project toolkit operation](toolkits/project-toolkit/README.md)
 
 See `CONTRIBUTING.md` for complete acceptance commands. Tests use temporary
 targets and fake lifecycle adapters; no CI job starts libvirt or performs VM

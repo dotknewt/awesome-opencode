@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -113,4 +113,71 @@ test("CLI global lifecycle honors XDG_CONFIG_HOME", async (t) => {
   assert.match(config.mcp["dotknewt-libvirt"].command.at(-1), new RegExp(`^${xdg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   const uninstall = await runCli(["uninstall", "libvirt-toolkit", "--global"], { env });
   assert.equal(uninstall.code, 0, uninstall.stderr);
+});
+
+test("CLI preserves consumer files and protects local edits through the project-toolkit lifecycle", async (t) => {
+  const project = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-cli-project-toolkit-"));
+  t.after(() => rm(project, { recursive: true, force: true }));
+  const agentsPath = path.join(project, "AGENTS.md");
+  const configPath = path.join(project, "opencode.json");
+  await writeFile(agentsPath, "# Consumer instructions\n");
+  await writeFile(configPath, '{"$schema":"https://opencode.ai/config.json","username":"consumer"}\n');
+
+  const dryRun = await runCli(["install", "project-toolkit", "--project", project, "--dry-run"]);
+  assert.equal(dryRun.code, 0, dryRun.stderr);
+  assert.match(dryRun.stdout, /DRY RUN/i);
+  assert.match(dryRun.stdout, /install project-toolkit@0\.1\.0/);
+  await assert.rejects(access(path.join(project, ".opencode")));
+  assert.equal(await readFile(agentsPath, "utf8"), "# Consumer instructions\n");
+  assert.equal(await readFile(configPath, "utf8"), '{"$schema":"https://opencode.ai/config.json","username":"consumer"}\n');
+
+  const install = await runCli(["install", "project-toolkit", "--project", project]);
+  assert.equal(install.code, 0, install.stderr);
+  assert.match(install.stdout, /install project-toolkit@0\.1\.0/);
+  assert.match(install.stdout, /restart OpenCode/i);
+  const skillPath = path.join(project, ".opencode", "skills", "dotknewt-handling-todos", "SKILL.md");
+  const installedSkill = await readFile(skillPath, "utf8");
+  assert.match(installedSkill, /name: dotknewt-handling-todos/);
+  assert.equal(await readFile(agentsPath, "utf8"), "# Consumer instructions\n");
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).username, "consumer");
+
+  const list = await runCli(["list", "--project", project]);
+  assert.equal(list.code, 0, list.stderr);
+  assert.match(list.stdout, /project-toolkit\s+0\.1\.0\s+0\.1\.0/);
+  const update = await runCli(["update", "project-toolkit", "--project", project]);
+  assert.equal(update.code, 0, update.stderr);
+  assert.match(update.stdout, /update project-toolkit@0\.1\.0/);
+
+  await writeFile(skillPath, `${installedSkill}\nLocal consumer edit.\n`);
+  const conflict = await runCli(["update", "project-toolkit", "--project", project]);
+  assert.equal(conflict.code, 1);
+  assert.match(conflict.stderr, /modified.*owned/i);
+  await writeFile(skillPath, installedSkill);
+
+  const uninstall = await runCli(["uninstall", "project-toolkit", "--project", project]);
+  assert.equal(uninstall.code, 0, uninstall.stderr);
+  assert.match(uninstall.stdout, /uninstall project-toolkit@0\.1\.0/);
+  await assert.rejects(access(skillPath));
+  assert.equal(await readFile(agentsPath, "utf8"), "# Consumer instructions\n");
+  assert.equal(JSON.parse(await readFile(configPath, "utf8")).username, "consumer");
+});
+
+test("CLI project-toolkit global lifecycle honors the isolated global selector", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-cli-project-toolkit-global-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const xdg = path.join(root, "xdg");
+  const env = { ...process.env, XDG_CONFIG_HOME: xdg, HOME: path.join(root, "home") };
+
+  const install = await runCli(["install", "project-toolkit", "--global"], { env });
+  assert.equal(install.code, 0, install.stderr);
+  const skillPath = path.join(xdg, "opencode", "skills", "dotknewt-handling-todos", "SKILL.md");
+  assert.match(await readFile(skillPath, "utf8"), /name: dotknewt-handling-todos/);
+  const list = await runCli(["list", "--global"], { env });
+  assert.equal(list.code, 0, list.stderr);
+  assert.match(list.stdout, /project-toolkit\s+0\.1\.0\s+0\.1\.0/);
+  const update = await runCli(["update", "project-toolkit", "--global"], { env });
+  assert.equal(update.code, 0, update.stderr);
+  const uninstall = await runCli(["uninstall", "project-toolkit", "--global"], { env });
+  assert.equal(uninstall.code, 0, uninstall.stderr);
+  await assert.rejects(access(skillPath));
 });

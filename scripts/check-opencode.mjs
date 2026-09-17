@@ -46,10 +46,14 @@ async function isolatedInstall(installer) {
   const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-native-check-"));
   const project = path.join(root, "project");
   await mkdir(project, { recursive: true });
-  const installed = await command(process.execPath, [installer, "install", "libvirt-toolkit", "--project", project], {
-    cwd: repositoryRoot,
-    env: process.env,
-  });
+  const installed = await command(
+    process.execPath,
+    [installer, "install", "libvirt-toolkit", "project-toolkit", "--project", project],
+    {
+      cwd: repositoryRoot,
+      env: process.env,
+    },
+  );
   assert.equal(installed.code, 0, installed.stderr || installed.error?.message);
   const configPath = path.join(project, "opencode.json");
   const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -136,7 +140,11 @@ async function checkDiscovery(installer, opencode) {
     };
     const skills = await command(opencode, ["debug", "skill", "--pure"], { cwd: fixture.project, env });
     assert.equal(skills.code, 0, skills.stderr);
-    for (const name of ["dotknewt-libvirt-vms", "dotknewt-guest-access"]) {
+    for (const name of [
+      "dotknewt-libvirt-vms",
+      "dotknewt-guest-access",
+      "dotknewt-handling-todos",
+    ]) {
       assert.match(skills.stdout, new RegExp(name));
       assert.match(skills.stdout, new RegExp(path.join(fixture.project, ".opencode", "skills", name).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
@@ -145,7 +153,7 @@ async function checkDiscovery(installer, opencode) {
     const resolvedConfig = JSON.parse(resolved.stdout);
     assert.equal(resolvedConfig.mcp?.["dotknewt-libvirt"]?.enabled, false);
     assert.equal(resolvedConfig.mcp?.["dotknewt-libvirt"]?.command?.at(-1), fixture.config.mcp["dotknewt-libvirt"].command.at(-1));
-    console.log(`PASS: OpenCode ${version.stdout.trim()} discovered two native skills with MCP disabled in an isolated environment`);
+    console.log(`PASS: OpenCode ${version.stdout.trim()} discovered three native skills with MCP disabled in an isolated environment`);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
