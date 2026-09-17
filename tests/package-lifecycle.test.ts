@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rename, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 
 interface CommandResult {
   code: number | null;
@@ -29,6 +30,63 @@ function command(
     child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
+
+test("global Git install builds a standalone CLI from clean source", { timeout: 180_000 }, async (t) => {
+  const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-git-package-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source");
+  const prefix = path.join(root, "prefix");
+  const cache = path.join(root, "npm-cache");
+  const home = path.join(root, "home");
+  await Promise.all([source, prefix, cache, home].map((directory) => mkdir(directory)));
+
+  // Copy tracked working-tree files so local fixes are tested without carrying
+  // over ignored build output or dependencies from the developer's checkout.
+  const tracked = await command("git", ["ls-files", "-z"], { cwd: repositoryRoot });
+  assert.equal(tracked.code, 0, tracked.stderr);
+  for (const file of tracked.stdout.split("\0").filter(Boolean)) {
+    const destination = path.join(source, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(path.join(repositoryRoot, file), destination);
+  }
+  await assert.rejects(access(path.join(source, "dist")), { code: "ENOENT" });
+  await assert.rejects(access(path.join(source, "node_modules")), { code: "ENOENT" });
+
+  const env = {
+    PATH: process.env.PATH,
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Package lifecycle test",
+    GIT_AUTHOR_EMAIL: "package-test@example.invalid",
+    GIT_COMMITTER_NAME: "Package lifecycle test",
+    GIT_COMMITTER_EMAIL: "package-test@example.invalid",
+    npm_config_cache: cache,
+    npm_config_allow_git: "root",
+  };
+  // This commit belongs only to the disposable fixture, never the checkout.
+  for (const args of [["init"], ["add", "."], ["commit", "-m", "Package lifecycle fixture"]]) {
+    const result = await command("git", args, { cwd: source, env });
+    assert.equal(result.code, 0, result.stderr);
+  }
+  const install = await command(
+    "npm",
+    ["install", "--global", "--prefix", prefix, `git+${pathToFileURL(source).href}`],
+    { cwd: root, env },
+  );
+  assert.equal(install.code, 0, `${install.stdout}\n${install.stderr}`);
+
+  await rm(source, { recursive: true, force: true });
+  await rm(cache, { recursive: true, force: true });
+  const binary = path.join(prefix, "bin", "awesome-opencode");
+  await assert.doesNotReject(access(binary), "Git installation must provide the declared CLI executable");
+  const version = await command(binary, ["--version"], { cwd: root, env });
+  const metadata = JSON.parse(await readFile(path.join(prefix, "lib", "node_modules", "awesome-opencode", "package.json"), "utf8"));
+  assert.equal(version.code, 0, version.stderr);
+  assert.equal(version.stdout.trim(), metadata.version);
+  const validate = await command(binary, ["validate"], { cwd: root, env });
+  assert.equal(validate.code, 0, validate.stderr);
+});
 
 test("real npm tarball remains functional after disposable package source removal", { timeout: 180_000 }, async (t) => {
   const repositoryRoot = path.resolve(import.meta.dirname, "../..");

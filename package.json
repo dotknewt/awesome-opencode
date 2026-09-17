@@ -35,7 +35,7 @@
     "test:opencode:schema": "npm run build && node scripts/check-opencode.mjs schema",
     "test:opencode:discovery": "npm run build && node scripts/check-opencode.mjs discovery",
     "validate": "npm run build && node dist/installer/src/cli.js validate",
-    "prepack": "npm run build && node dist/installer/src/cli.js validate"
+    "prepare": "npm run build && node dist/installer/src/cli.js validate"
   },
   "license": "MIT",
   "dependencies": {

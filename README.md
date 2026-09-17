@@ -22,8 +22,35 @@ VM. Restart OpenCode after an applied install, update, or uninstall.
 
 ## CLI
 
-Install the package by your normal npm package source, (eg. `NPM_CONFIG_ALLOW_GIT=root npm install https://github.com/dotknewt/awesome-opencode.git`) then use an absolute
-target path:
+Install the CLI globally from Git, then invoke it directly:
+
+```sh
+NPM_CONFIG_ALLOW_GIT=root npm install -g https://github.com/dotknewt/awesome-opencode.git
+awesome-opencode --version
+awesome-opencode --help
+```
+
+The Git install uses npm's `prepare` lifecycle to build and validate the CLI;
+leave lifecycle scripts enabled. `NPM_CONFIG_ALLOW_GIT=root` permits the direct
+Git dependency on npm versions that require explicit Git-source permission.
+Ensure `$(npm prefix -g)/bin` is on your `PATH`. For example, with an npm prefix
+of `$HOME/.local`, the executable is `$HOME/.local/bin/awesome-opencode`.
+Inspect the global installation with `npm list -g awesome-opencode --all`.
+
+When working in this repository's source checkout, initialize it separately:
+
+```sh
+npm ci
+npm run build
+npx awesome-opencode --help
+```
+
+Inside the checkout, `npx awesome-opencode` selects the local package before the
+global executable, so it needs local dependencies and build output. Plain
+`npm list` also reports the checkout's dependencies, not the global installation.
+Use `awesome-opencode` directly to run the global CLI.
+
+For toolkit operations, use an absolute target path:
 
 ```text
 awesome-opencode list (--project PATH | --global)
