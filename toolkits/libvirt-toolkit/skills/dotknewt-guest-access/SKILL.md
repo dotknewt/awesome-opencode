@@ -23,6 +23,16 @@ Create or update a lightweight Markdown handoff. Preserve unknown values as
 - Requested outcome:
 - Provider / host / owner / session / domain:
 - Provider connection identity:
+- Governing testing policy:
+- Protected source name / UUID:
+- Published template / version / immutable hashes:
+- Source -> publication -> clone lineage:
+- Clone name / UUID / vm_create result:
+- Clone-owned overlay / exact backing / no-drift evidence:
+- Independent writable NVRAM evidence:
+- Endpoint reinspection / clone UUID binding:
+- Authorized test target: unknown
+- Test target authorization: untested
 - Connection origin:
 - Candidate endpoint and provenance:
 - Intended account / home:
@@ -42,6 +52,64 @@ Use only `verified`, `failed`, `untested`, or `not applicable` for stage status.
 Keep the provider host, session, and domain explicit when supplied by another
 skill. Invoke provider-specific skills by name for provider work; do not assume
 their files or tools exist in a standalone installation.
+
+## Gate clone-only testing before guest access
+
+Apply this gate when the request supplies an existing VM or template as the basis
+for testing under the provider's clone-only testing policy, or the handoff records
+that governing policy. Determine applicability from request context, not VM names
+or a missing handoff field. Unrelated existing-VM access does not acquire this
+gate merely by mentioning a clone or running tests; mark testing-only fields
+`not applicable` and retain the optional comparison behavior below.
+
+For governed workflows, require a consistent evidence-bearing handoff before any
+endpoint probe, host-key scan, SSH, QGA, transfer or guest execution:
+
+1. Resolve the protected source name/UUID from the request and corroborating
+   provider connection, host, owner and session. Keep an explicitly supplied
+   mutable managed VM protected even if ordinary runtime checks permit mutation.
+2. Verify source -> published template/version -> successful distinct `vm_create`
+   clone lineage, including any independently authorized preparation-copy link.
+   Retain immutable publication hashes or equivalent manifest evidence. Confirm
+   clone name, fresh UUID/MAC and creation result; a local credential `creation_id`
+   is not a provider creation result.
+3. Verify the exclusive clone-owned overlay, exact immutable publication backing,
+   no configuration/backing drift, and independent writable NVRAM where applicable.
+   A source-backed overlay or shared source NVRAM is a blocker, not residual risk
+   to disclose while continuing SSH.
+4. Require fresh provider endpoint provenance and reinspection bound to the exact
+   clone UUID, with the actual connection origin and route explicit. A cached
+   SSH config or reachable address cannot supply missing clone binding.
+
+Only after all required evidence agrees emit `Authorized test target: clone` and
+`Test target authorization: verified`. That authorizes the target, not completed
+SSH or tests. Until then keep the target `unknown`, authorization `untested` for
+missing evidence or `failed` for contradictions, and dependent guest stages
+`untested`. Names or suffixes, UUID/MAC alone, QGA success, an address alone and
+runtime mutation permission never replace this evidence.
+
+Missing lineage, a source-bound endpoint, storage drift, uncertain creation and
+mutable managed source reuse all block before SSH, transfer or execution. Return
+the narrow blocker to read-only provider inspection (for libvirt, invoke
+`dotknewt-libvirt-vms` by name). Do not guess, rotate credentials or probe an
+unauthorized endpoint, including a diagnostic TCP probe or `ssh-keyscan` of the
+source. The protected source must not be booted, shut down, force-stopped,
+reconfigured, provisioned, accessed by SSH/QGA, transferred to, used for guest
+execution, snapshotted, deleted, recovered or cleaned up. If source preparation
+is needed, stop this testing workflow and return to the provider's separately
+authorized preparation policy; never relabel the source as a test clone.
+
+For uncertain `vm_create`, preserve pending credentials unchanged, do not bind a
+guessed UUID or retry blindly, and request read-only reconciliation of identified
+candidate resources and their journal. Any recovery proposal is conditional on
+verified candidate clone ownership, restricted to those clone-owned resources,
+and preserves the source, immutable published disk/NVRAM backing and journal
+until recovery is verified. Full authorization evidence is still required before
+guest work resumes.
+
+Once authorized, continue in order: host-key trust -> intended-account
+authentication -> regular-user context -> transfer and destination verification
+-> requested command. The sections below remain separate evidence gates.
 
 ## Inventory capabilities before conclusions
 
@@ -73,8 +141,11 @@ virtualization host but unreachable from the client. A loopback forward on a
 remote virtualization host is remote loopback, not client loopback; require an
 explicit route, jump, or tunnel rather than pretending it is local.
 
-Use a bounded, noninteractive transport probe. Interpret timeout, refusal,
-host-key failure, and authentication failure as different evidence. Do not
+For clone-only testing, first pass the test-target authorization gate above.
+Use a bounded, noninteractive transport probe only against the authorized clone.
+For unrelated access, retain the normal bounded endpoint diagnosis. Interpret
+timeout, refusal, host-key failure, and authentication failure as different
+evidence. Do not
 rewrite guest firewall, sshd, keys, or provider networking merely because the
 first candidate endpoint fails.
 
@@ -105,7 +176,10 @@ verification. Authenticate noninteractively to the intended regular account and
 distinguish successful TCP, host-key verification, and account authentication.
 
 When working with a clone, verify guest and SSH identity independently where
-relevant. Compare source or sibling evidence when it is available. Require that
+relevant. For clone-only testing, this comparison guidance never makes source/
+publication lineage, storage or endpoint authorization optional; use retained
+source evidence without accessing the protected source. For unrelated access,
+compare source or sibling evidence when it is available. Require that
 comparison to pass only when the requested outcome or an applicable policy
 explicitly requires clone-uniqueness proof. Otherwise, report an unavailable
 comparison as `untested`, disclose the residual uncertainty, and continue: that
@@ -156,6 +230,7 @@ Return a compact stage table and keep failures local to their stage:
 |---|---|---|
 | Lifecycle | verified / failed / untested / not applicable | Provider/domain evidence |
 | Guest prerequisites | ... | sshd/account/tool evidence |
+| Test target authorization | ... | Required clone-only lineage, storage, creation and endpoint evidence; otherwise not applicable |
 | SSH authentication | ... | Endpoint, trusted key, account result |
 | Clone identity | ... | Compared identities or unavailable comparison |
 | Transfer | ... | Destination verification |
@@ -165,9 +240,12 @@ Treat a stage as required only when the requested outcome or an applicable polic
 depends on it. Do not report the requested outcome complete while such a stage is
 `untested` or `failed`; state the narrow blocker and evidence needed next. For a
 project workflow, endpoint host-key trust, intended-account authentication,
-transfer verification, and requested execution evidence are required. Clone
-source/sibling comparison is required only by an explicit clone-uniqueness need;
-when it is unavailable otherwise, keep clone identity `untested` and disclosed
+transfer verification, and requested execution evidence are required. Governed
+clone-only testing additionally requires verified test-target authorization;
+missing or failed authorization blocks access, not merely a completion claim.
+For unrelated access, clone source/sibling comparison is required only by an
+explicit clone-uniqueness need; when it is unavailable otherwise, keep clone
+identity `untested` and disclosed
 without blocking independently trusted authentication, transfer, or execution.
 
 ## Common mistakes

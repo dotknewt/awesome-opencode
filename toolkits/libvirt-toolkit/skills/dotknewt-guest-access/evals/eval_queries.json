@@ -4,5 +4,7 @@
   { "query": "Sync ~/src/widget to the guest, then do a dry run from the project's directory and report the exit code.", "should_trigger": true },
   { "query": "Create a fresh project SSH credential before provisioning this VM, then bind it to the returned VM identity.", "should_trigger": true },
   { "query": "List the VMs in my libvirt session and tell me which ones are running.", "should_trigger": false },
-  { "query": "Create a powered-off snapshot of dev-clone after confirming it is shut down.", "should_trigger": false }
+  { "query": "Create a powered-off snapshot of dev-clone after confirming it is shut down.", "should_trigger": false },
+  { "query": "The provider handed off a test clone of my supplied source VM; verify the handoff before syncing parser and running pytest as dev.", "should_trigger": true },
+  { "query": "The test clone's SSH config may still point at the source VM. Check whether guest access is authorized before copying the project.", "should_trigger": true }
 ]

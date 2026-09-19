@@ -81,18 +81,39 @@ is not a copy. The preparation copy may be published after preparation, but it
 is not the final test VM.
 
 Testing requires publication followed by a distinct `vm_create` working clone.
-Before any clone power, endpoint setup, guest access, transfer, execution,
-recovery, or cleanup, verify all of the following:
+Use two authorization stages; neither is inferred from names, UUID/MAC alone,
+addresses, QGA success, or ordinary runtime mutation permission.
 
+**Stage 1: provider bootstrap authorization.** Before clone endpoint configuration
+or power, verify all of the following through read-only provider inspection:
+
+- The protected source identity, host, owner and session agree with the request
+  and publication evidence, including immutable hashes or equivalent manifests.
 - The lineage is `protected source -> published template/version -> vm_create
-  clone`, with any independently authorized preparation copy recorded between
-  source and publication.
+  clone`, with a successful distinct creation result and any independently
+  authorized preparation copy recorded between source and publication.
 - The clone has a fresh domain UUID and MAC addresses, an exclusive
   toolkit-owned overlay backed by the exact immutable publication with no
   configuration or backing drift, and an independent writable NVRAM copy when
   applicable.
-- Endpoint provenance and reinspection bind the candidate endpoint to the clone
-  UUID, not to the source, preparation copy, publication, or a sibling VM.
+
+Stage 1 does not require an existing endpoint. It authorizes only endpoint
+configuration on that confirmed clone and the minimum clone power action needed
+to materialize/reinspect the endpoint. Retain bounded graceful shutdown,
+shut-off confirmation before XML edits, and separate explicit authorization for
+force-stop; a timeout never permits escalation. Bootstrap grants no snapshot,
+deletion, recovery or cleanup permission. The source, preparation copy,
+publication and siblings are never bootstrap targets.
+
+**Stage 2: full test-target authorization.** Retain valid Stage 1 evidence, then
+require fresh provider endpoint provenance and reinspection binding the actual
+route/forward to the exact clone UUID. Use host-side inspection, not guest contact,
+to establish this binding. Only Stage 2 permits endpoint probes, host-key scans,
+QGA, SSH, transfer or execution, still subject to their own trust and access gates.
+Until it passes, keep `Authorized test target: unknown`; only after it passes
+record `Authorized test target: clone`. A missing or source-bound endpoint blocks
+all guest contact, not Stage 1's narrowly authorized clone bootstrap. Never
+configure, power, probe, mutate, recover or clean up the protected source.
 
 Missing or mismatched evidence blocks testing. An uncertain `vm_create` result
 is not a clone: preserve the pending credential, do not guess a UUID or retry
@@ -127,6 +148,11 @@ VM's directory.
 
 ## Guest-access handoff
 
+For governed testing requests, apply **Clone-only testing policy** before this
+recipe: its target is the distinct working clone, never the protected source.
+Carry the evidence below across the handoff rather than treating lifecycle or
+SSH readiness as test-target authorization.
+
 Do not stop a project-in-VM request after `vm_start`. Open
 `references/guest-access.md`, confirm the provider host, VM owner, session,
 domain, network path, and endpoint provenance, and preserve all lifecycle,
@@ -142,6 +168,16 @@ Create or update this handoff for both newly created and existing clones:
 - Requested outcome:
 - Provider / host / owner / session / domain:
 - Provider connection identity:
+- Governing testing policy:
+- Protected source name / UUID:
+- Published template / version / immutable hashes:
+- Source -> publication -> clone lineage:
+- Clone name / UUID / vm_create result:
+- Clone-owned overlay / exact backing / no-drift evidence:
+- Independent writable NVRAM evidence:
+- Endpoint reinspection / clone UUID binding:
+- Authorized test target: unknown
+- Test target authorization: untested
 - Connection origin:
 - Candidate endpoint and provenance:
 - Intended account / home:
@@ -158,9 +194,27 @@ Create or update this handoff for both newly created and existing clones:
 ```
 
 Populate known provider fields and leave unknown values explicit. Use only
-`verified`, `failed`, `untested`, or `not applicable` for stage status. Invoke
-`dotknewt-guest-access` by name with this record after the provider path and endpoint are
-ready. Keep QGA diagnostics, SSH authentication, clone identity, transfer, and
+`verified`, `failed`, `untested`, or `not applicable` for stage status. For
+clone-only testing, record the protected source from request context, corroborate
+host/owner/session for the complete lineage, and retain publication hashes or
+equivalent immutable-manifest evidence. Include any separately authorized
+preparation-copy link. Record successful `vm_create` identity separately from the
+local credential `creation_id`, exclusive overlay ownership and exact backing,
+absence of configuration/backing drift, independent writable NVRAM when applicable,
+and fresh provider endpoint reinspection tied to the exact clone UUID.
+
+Only when all required evidence agrees set `Authorized test target: clone` and
+`Test target authorization: verified`. Missing lineage, a source-bound endpoint,
+storage drift, uncertain creation, or reuse of a mutable managed source blocks
+SSH, transfer, execution and endpoint probes. Return the narrow blocker to
+read-only provider inspection; uncertain creation retains its pending credential
+and the canonical candidate clone-owned journal recovery boundary. Do not guess,
+rotate credentials, probe the source, or remediate its state. For unrelated
+access requests, mark the testing-only fields `not applicable`; do not impose
+this gate solely because a VM is called a clone.
+
+Invoke `dotknewt-guest-access` by name with this record after the provider path and
+endpoint are ready. Keep QGA diagnostics, SSH authentication, clone identity, transfer, and
 regular-user execution as separate claims; a running domain or successful QGA
 probe does not complete the requested guest workflow.
 

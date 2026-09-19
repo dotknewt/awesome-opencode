@@ -6,6 +6,18 @@ the selected `dotknewt-libvirt` MCP connection. Invoke `dotknewt-guest-access` b
 SSH trust, authentication, transfer, and regular-user execution; do not duplicate
 or replace that skill's transport workflow here.
 
+For a supplied-source testing request, the canonical **Clone-only testing policy**
+in `dotknewt-libvirt-vms` governs every step below. Source corroboration uses
+read-only provider inspection, not guest access. Stage 1 authorizes only endpoint
+configuration and the minimum power action on the confirmed distinct clone;
+Stage 2 requires fresh endpoint binding before probes, host-key scans, QGA, SSH,
+transfer or execution. Neither stage permits bootstrap, mutation, probes,
+recovery or cleanup on the source, preparation copy, publication or siblings.
+The protected source stays ineligible even when it is a mutable managed VM.
+Creation-time provisioning below
+may modify only the new clone overlay, never the source. A name, UUID/MAC alone, address
+alone, QGA success or ordinary runtime mutation permission is not authorization.
+
 ## Establish the provider context
 
 Record the MCP connection, virtualization host, VM owner, libvirt session, and
@@ -16,6 +28,16 @@ domain before interpreting any address or changing a persistent definition:
 - Requested outcome:
 - Provider / host / owner / session / domain: libvirt / <host> / <owner> / qemu:///session / <domain>
 - Provider connection identity: <exact MCP connection name>
+- Governing testing policy:
+- Protected source name / UUID:
+- Published template / version / immutable hashes:
+- Source -> publication -> clone lineage:
+- Clone name / UUID / vm_create result:
+- Clone-owned overlay / exact backing / no-drift evidence:
+- Independent writable NVRAM evidence:
+- Endpoint reinspection / clone UUID binding:
+- Authorized test target: unknown
+- Test target authorization: untested
 - Connection origin: <client, virtualization host, or named jump path>
 - Candidate endpoint and provenance: unknown
 - Intended account / home: <account> / unknown
@@ -32,9 +54,29 @@ domain before interpreting any address or changing a persistent definition:
 ```
 
 Use only `verified`, `failed`, `untested`, or `not applicable` for stage status.
+For clone-only testing, preserve the request-resolved source identity and provider
+host/owner/session across source, publication and clone records. Carry immutable
+publication hashes or equivalent manifest evidence, any authorized preparation-copy
+link, the successful `vm_create` result, exclusive overlay ownership and exact
+backing with no configuration/backing drift, and independent writable NVRAM where
+applicable. Fresh endpoint reinspection must bind the route/forward to that exact
+clone UUID, not to the source, preparation copy or sibling. Only when all evidence
+agrees set `Authorized test target: clone` and `Test target authorization: verified`.
+For unrelated access, mark these testing-only fields `not applicable`.
+
+Missing lineage, a source-bound endpoint, storage drift, uncertain creation or
+mutable managed source reuse blocks guest access, transfer and execution. Return
+to read-only provider inspection, never credential rotation, guessed identity or
+source probing. Preserve pending credentials on uncertain creation; recovery is
+limited to identified candidate clone-owned resources and their journal after
+ownership reconciliation, preserving the source and immutable publication backing.
+Do not remove a recovery journal before recovery is verified.
+
 Confirm the selected connection with `host_info`, then use `vm_list` and
 `vm_inspect` on that same connection. On the virtualization host, compare the
-VM owner's actual environment and session when needed:
+VM owner's actual environment and session when needed. In a clone-only workflow,
+`DOMAIN` below is the verified working clone, never the source; do not use its
+guest-agent address query until test-target authorization is verified:
 
 ```sh
 SESSION='qemu:///session'
@@ -50,7 +92,9 @@ Treat `domifaddr` as one candidate source, not as reachability proof. The guest
 agent source may be unavailable, and an address reported on a host-local bridge
 may have no route from the client. Inspect the route from the actual connection
 origin (for example, `ip route get <candidate-address>` on that machine) before
-probing. Keep these path origins distinct:
+probing. For clone-only testing, no transport or host-key probe is permitted
+until test-target authorization is verified; an endpoint bound to the source is
+never probed, even to diagnose a refusal. Keep these path origins distinct:
 
 - client paths and client loopback belong to the SSH/transfer origin;
 - virtualization-host paths, listeners, and `qemu:///session` belong to the VM owner;
@@ -96,7 +140,18 @@ directory remains untouched.
 ## Configure a unique passt loopback forward
 
 Use this path only for a managed working VM with a supported user-mode
-interface. A clone has no inherited fixed forward: the clone sanitizer removes
+interface. For clone-only testing, first satisfy canonical **Stage 1: provider
+bootstrap authorization**: protected-source identity and publication lineage,
+successful distinct `vm_create` identity, exclusive clone-owned overlay with
+exact immutable backing and no drift, and independent writable NVRAM where
+applicable must all agree. Endpoint binding is not a Stage 1 prerequisite.
+Set `DOMAIN` to that confirmed clone only. Missing Stage 1 evidence stops at
+read-only provider inspection; managed ownership alone never authorizes the
+source, preparation copy, publication or a sibling as a bootstrap target.
+Stage 1 permits only the endpoint configuration below and minimum clone power
+actions needed to materialize/reinspect it; probes, host-key scans, QGA, SSH,
+transfer and execution remain blocked pending Stage 2. A clone has no inherited
+fixed forward: the clone sanitizer removes
 every `portForward` to prevent sibling collisions. If the VM is running, request
 graceful shutdown through `vm_shutdown` with a bounded wait, reinspect, and
 continue only after `vm_inspect` confirms shut off. Never infer shutdown from a
@@ -164,8 +219,15 @@ off, add the XML to the persistent user interface, then re-read it with
 `virsh --connect "$SESSION" dumpxml --inactive "$DOMAIN"`. Confirm the domain,
 interface, bind address, selected host port, and guest destination 22. Start the
 VM through `vm_start` on the original MCP connection, then call `vm_inspect`
-again. Check the actual virtualization-host listener and probe the endpoint from
-the stated connection origin; configuration alone is not access evidence.
+again. Check the actual virtualization-host listener. In a clone-only workflow,
+this is still Stage 1 bootstrap: freshly correlate the listener/forward and
+route with the clone UUID using host-side inspection, and recheck ownership,
+storage, NVRAM and absence of unexpected drift after the authorized endpoint edit.
+Only then complete **Stage 2: full test-target authorization** and record
+`Authorized test target: clone` before any endpoint probe, host-key scan, QGA,
+SSH, transfer or execution. A listener alone is not binding or access evidence;
+a failed or mismatched binding keeps guest contact blocked and returns to
+read-only provider inspection, never a probe of the source.
 
 For a local virtualization host, the candidate endpoint is
 `127.0.0.1:<HOST_PORT>` on that host. For a remote virtualization host, that is
@@ -191,6 +253,10 @@ rsync, and `ssh -G` invocation; the explicit management config above is only for
 the separately trusted outer route.
 
 ## Optional read-only QEMU guest-agent diagnosis
+
+For clone-only testing this optional path is restricted to the authorized clone.
+Do not use QGA on the protected source or to bypass missing lineage, storage,
+creation or endpoint evidence.
 
 Use QGA only to gather missing prerequisite evidence when the selected host,
 owner, session, and domain are explicit. First record `domuuid`, `domstate`, and
@@ -248,9 +314,15 @@ or project setup.
 ## Complete the handoff
 
 Update candidate endpoint provenance, domain/guest identity evidence, available
-tools, and every stage status. Invoke `dotknewt-guest-access` by name with the completed
-handoff. Require trusted SSH host identity and intended-account authentication
-before project execution. Perform clone identity comparisons when evidence is
+tools, and every stage status. In clone-only workflows, recheck the complete
+authorization record before handing off; missing or mismatched evidence blocks
+SSH, transfer and execution rather than becoming optional comparison uncertainty.
+Never obtain comparison evidence by accessing the protected source. Invoke
+`dotknewt-guest-access` by name with the completed handoff. Preserve the order:
+trusted SSH host identity -> intended-account authentication -> regular-user
+context -> transfer and destination verification -> requested command.
+
+For unrelated access requests, perform clone identity comparisons when evidence is
 available or clone-uniqueness proof is explicitly required. When retained-source
 or sibling evidence cannot be inspected, record the comparison as `untested` and
 never infer uniqueness from a fresh libvirt UUID or MAC. That missing comparison
