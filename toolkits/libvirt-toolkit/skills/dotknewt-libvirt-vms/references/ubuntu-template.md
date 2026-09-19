@@ -4,6 +4,14 @@ Use this recipe only when the user asks to install or prepare an Ubuntu source
 domain for `template_publish`. It prepares an ordinary, user-owned source VM;
 publication later creates the toolkit's independent flattened template.
 
+For a testing request based on an existing VM, treat that supplied VM as the
+retained source. Read-only inspection and `template_publish` may read a verified
+prepared, supported, shut-off source, but the testing workflow must not start,
+shut down, snapshot, SSH to, or change it. A running, managed-saved, unsafe,
+unsupported, unprepared, or failed-publication source stops testing. Report the
+condition rather than correcting it or silently assigning the source another
+role.
+
 ## 1. Preserve the prepared install inputs
 
 The initial recipe uses the user's prepared Ubuntu 26.04 desktop ISO and
@@ -60,12 +68,25 @@ preparing it for publication.
 
 ## 3. Prepare the exact guest-access contract
 
-Prepare a disposable full copy and never inject a personal or project login key:
+Guest preparation is a separate, non-testing workflow that needs independent
+explicit authorization. Preserve the retained source UUID, MAC addresses,
+inactive XML, disk path, and disk hash/stat output before copying it. Prepare a
+disposable full copy and never inject a personal or project login key:
 
 ```sh
 virt-clone --connect qemu:///session --original "$SOURCE_VM" \
   --name "$PREPARED_COPY" --file "$NEW_COPY_DISK"
 ```
+
+Before any boot or mutation, inspect the copy's inactive XML and verify a fresh
+UUID and MAC addresses, an independent disk path resolving to a separate full
+file with no backing relationship to the source, and independent NVRAM when the
+source has writable NVRAM. A rename, suffix, or fresh UUID/MAC without verified
+storage separation is not an independent copy. Recheck the retained source
+identity, XML, and disk and NVRAM hashes after preparation. Record the lineage
+`retained source -> preparation copy -> published template/version`. The
+preparation copy may become the publication input, but it is never the final
+test clone.
 
 Inspect the copy's real account, home, shell, SSH units, and mount layout. Before
 publication the selected non-root account must occur exactly once in
@@ -175,64 +196,51 @@ substitute. Boot disposable working clones to prove machine-ID and host-key
 regeneration before SSH starts; never boot and consume the publication source's
 oneshot.
 
-Operate only on the copy and hash/stat the retained source disk before and after.
+Operate only on the verified copy and hash/stat the retained source disk before
+and after.
 Stale `/etc/fstab` aliases must be repaired only in the copy. Remove credentials,
 enrollment, secrets, and source-specific network state. Add passt forwarding only
 to an individual working VM by following `guest-access.md`.
 
-## 4. Confirm shutdown, remove install media, and keep a source checkpoint
+## 4. Publish and create a distinct test clone
 
-First verify the domain is confirmed shut off; do not treat a timeout or command
-return alone as proof:
+Inspect the retained source or authorized preparation copy and verify it is
+already shut off; do not treat a timeout or command return alone as proof:
 
 ```sh
 virsh --connect qemu:///session domstate "$SOURCE_VM"
 ```
 
-Only after it reports `shut off`, remove the installation CD-ROM from the
-persistent definition. Inspect `domblklist --details` to obtain the actual CD-ROM
-target (for example `sda`) instead of guessing:
+If it is running, stop the testing request and report that state. Don't shut it
+down. Installation-media removal, source checkpoints, guest preparation, or any
+other source change belongs only to a separately authorized non-testing
+workflow, never to testing. Re-run `domstate`, inspect the inactive domain XML
+and disk with `domblklist --inactive --details`, verify the recorded identity and
+hashes, then call `template_publish` through the MCP connection selected for this
+host. A rejection stops testing and must be reported, not bypassed or corrected
+on the retained source.
 
-```sh
-virsh --connect qemu:///session domblklist "$SOURCE_VM" --details
-virsh --connect qemu:///session change-media "$SOURCE_VM" "$CDROM_TARGET" \
-  --eject --config
-```
-
-If the user wants the initial source-domain checkpoint, create it while shut off
-and give it the required explicit name:
-
-```sh
-virsh --connect qemu:///session snapshot-create-as \
-  --domain "$SOURCE_VM" --name base-install \
-  --description "Prepared Ubuntu source before toolkit publication"
-```
-
-This `base-install` object is a native `virsh` snapshot of the separately owned
-source domain. It is not a toolkit snapshot and will not appear in
-`snapshot_list`. Toolkit snapshots apply only to managed working VMs and use
-external QCOW2/configuration/NVRAM layers.
-
-Re-run `domstate`, inspect the inactive domain XML and disk with
-`domblklist --inactive --details`, then call `template_publish` through the MCP
-connection selected for this host. A rejection must be reported and corrected,
-not bypassed.
-
-If the request continues into a working guest, use `guest-access.md` for the
-provider endpoint and handoff, then invoke `dotknewt-guest-access` by name. Before project
-VM creation, use that skill's installed helper to prepare a fresh credential;
-pass only its account and public key to `vm_create`. Do not send the local
+Testing requires the resulting published template/version and a distinct
+`vm_create` working clone. Use `guest-access.md` for that clone's provider
+endpoint and handoff, then invoke `dotknewt-guest-access` by name. Before clone
+creation, use that skill's installed helper to prepare a fresh credential; pass
+only its account and public key to `vm_create`. Do not send the local
 `creation_id` or private-key data. Bind that creation ID only after the response
-returns its separate VM UUID and matching `guest_access` account/fingerprint.
-Before project
-execution, verify the guest SSH host key through a trusted source, authenticate
-the intended regular account, and compare machine ID and SSH host-key identity
-with the retained source and a sibling when those are available. Report an
-unavailable comparison as `untested`, not as uniqueness. Unless the user or an
-applicable policy requires clone-uniqueness proof, that unavailable comparison
-does not block independently trusted guest access, transfer, or execution. The
-authorized Ubuntu 26.04 lifecycle smoke test described by the toolkit remains
-evidence for that one image's lifecycle only. It did not exercise this
+returns a separate clone UUID and matching `guest_access` account/fingerprint.
+
+Every boot, SSH connection, identity comparison, lifecycle smoke test, and
+requested test command must target this verified `vm_create` clone, never the
+retained source, preparation copy, or publication input. Before project
+execution, verify the clone's SSH host key through a trusted source,
+authenticate the intended regular account, and compare the clone's machine ID
+and SSH host-key identity with recorded source evidence and a sibling clone when
+those are available. Report an unavailable comparison as `untested`, not as
+uniqueness. If preparation becomes necessary during testing, stop and request
+the separate preparation workflow; don't relabel or modify any existing test
+input.
+
+The authorized Ubuntu 26.04 lifecycle smoke test described by the toolkit
+remains evidence for that one image's lifecycle only. It did not exercise this
 guest-access transformation or first-boot host-key sequence and establishes no
 Debian or CachyOS guest-access result. Guest-access script coverage uses a host
 temporary filesystem and real OpenSSH; the libguestfs command boundary and

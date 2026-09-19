@@ -6,6 +6,13 @@ compatible Debian domains without an OS-specific switch. Publication flattens a
 prepared shut-off source into an independent immutable QCOW2 template; project
 VMs get writable linked overlays.
 
+For testing, retain the supplied source unchanged. Read-only inspection and
+`template_publish` may read it only after it is verified prepared, supported,
+shut off, and free of managed-save state. A running, managed-saved, unsafe,
+unsupported, unprepared, or failed-publication source stops the testing request.
+Report the blocker rather than shutting down, snapshotting, booting, SSHing to,
+or otherwise changing the source.
+
 ## 1. Inspect the existing source
 
 Select the MCP host connection and call `host_info`, `vm_list`, and
@@ -33,9 +40,10 @@ preserve them; overrides set both current and configured values to the request.
 ## 2. Prepare the exact guest-access contract in a disposable copy
 
 Guest preparation is an explicit operation outside the toolkit's MCP lifecycle
-API. Keep the original source, and prepare a separate shut-off full copy with
-`virt-clone`. Offline customization additionally requires libguestfs tools
-(`virt-inspector`, `virt-cat`, `virt-customize`) on the server host.
+API and outside testing. It requires separate explicit authorization. Keep the
+original source, and prepare a separate shut-off full copy with `virt-clone`.
+Offline customization additionally requires libguestfs tools (`virt-inspector`,
+`virt-cat`, `virt-customize`) on the server host.
 
 Select unused `PREPARED_COPY` and absolute `NEW_COPY_DISK` values, and set
 `SOURCE_DISK` from the inspected writable disk path. Record its hash and file
@@ -46,10 +54,20 @@ sha256sum "$SOURCE_DISK"
 stat "$SOURCE_DISK"
 virt-clone --connect qemu:///session --original "$SOURCE_VM" \
   --name "$PREPARED_COPY" --file "$NEW_COPY_DISK"
+virsh --connect qemu:///session dumpxml --inactive "$PREPARED_COPY"
 virt-inspector --connect qemu:///session -d "$PREPARED_COPY"
 virt-cat --connect qemu:///session -d "$PREPARED_COPY" /etc/os-release
 virt-cat --connect qemu:///session -d "$PREPARED_COPY" /etc/fstab
 ```
+
+Before any boot or mutation, verify that the copy has a fresh UUID and MAC
+addresses and that its disk path resolves to a separate full file with no source
+backing relationship. This observed BIOS source has no NVRAM; if a different
+source has writable NVRAM, require a separate copy of it too. A rename, suffix,
+or UUID/MAC change without verified storage separation is not a copy. Preserve
+and recheck the original UUID, MAC addresses, inactive XML, disk path, and disk
+hash/stat output. Record `retained source -> preparation copy -> published
+template/version` lineage. The preparation copy is never the final test clone.
 
 Inspect the copy's actual accounts, mount layout, cloud-init state, and SSH
 units. Confirm Debian 13 and install `openssh-server` plus `openssh-client` before
@@ -162,7 +180,7 @@ source and consume its oneshot.
 Resolve stale `/etc/fstab` aliases only in the copy. Remove source credentials,
 enrollment, secrets, and static network identity. Recheck the retained source's
 hash/stat, keep the prepared copy shut off without managed save, and eject
-installation media using its inspected target.
+installation media from the copy using its inspected target.
 
 ## 3. Publish and create a project VM
 
@@ -179,7 +197,9 @@ On the selected MCP connection, call `template_publish` with:
 Replace the source placeholder with `PREPARED_COPY`. Choose an unused version
 after inspecting `template_list`; published versions are immutable. If the
 original source already has verified clone-identity preparation, it can instead
-be the publication source without making another preparation copy.
+be read directly by `template_publish` without making another preparation copy.
+Publication must preserve its power state, identity, XML, disk, and recorded
+hashes.
 
 Then call `vm_create` (replace the example VM name with a unique project name):
 
@@ -198,23 +218,29 @@ project credential. Pass only its public key/account; do not pass its local
 `creation_id` or private-key data. Bind that creation ID only after the response
 returns the separate VM UUID and matching `guest_access` account/fingerprint.
 
-The result is a shut-off working VM. For user-mode networking, follow
+The result is a shut-off working VM distinct from the retained source,
+preparation copy, and publication input. For user-mode networking, follow
 `guest-access.md` to inspect the path, select a distinct unused virtualization-
 host loopback port, configure the persistent passt forward while shut off, start
 through the MCP connection, and create the provider handoff. Then invoke
 `dotknewt-guest-access` by name for SSH trust, authentication, transfer, and execution.
 The toolkit does not allocate ports, run guest commands, or copy project files.
 
-After boot, verify `/etc/os-release`, guest hostname, machine ID, and SSH host-key
-fingerprint. Verify the guest SSH host key through a trusted source and
-authenticate the intended regular account before project work. Compare machine
-IDs and host keys with the retained source and a sibling clone when available;
-report an unavailable comparison as `untested`. Unless the user or an applicable
-policy requires clone-uniqueness proof, that unavailable comparison does not block
-independently trusted guest access, transfer, or execution. After graceful
-shutdown is confirmed, use `snapshot_create`
-and `snapshot_restore` for powered-off disk/configuration snapshots; BIOS guests
-have no NVRAM to capture, and RAM is never included.
+Every boot, SSH connection, identity comparison, lifecycle smoke test, and
+requested test command runs on this verified `vm_create` clone. After boot,
+verify `/etc/os-release`, guest hostname, machine ID, and SSH host-key
+fingerprint. Verify the clone's SSH host key through a trusted source and
+authenticate the intended regular account before project work. Compare its
+machine ID and host keys with recorded source evidence and a sibling clone when
+available; report an unavailable comparison as `untested`. Unless the user or an
+applicable policy requires clone-uniqueness proof, that unavailable comparison
+does not block independently trusted guest access, transfer, or execution. After
+graceful shutdown of the clone is confirmed, use `snapshot_create` and
+`snapshot_restore` for its powered-off disk/configuration snapshots; BIOS guests
+have no NVRAM to capture, and RAM is never included. If preparation becomes
+necessary during testing, stop and request the separate preparation workflow.
+Never relabel or modify the retained source or use the preparation copy as the
+test target.
 
 ## Evidence boundary
 

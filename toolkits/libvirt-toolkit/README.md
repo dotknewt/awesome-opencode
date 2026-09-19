@@ -64,6 +64,38 @@ credentialed `vm_create` additionally requires host `virt-customize` and
 install `openssh-server` and `openssh-client`; CachyOS/Arch installs `openssh`.
 SSH/SCP/rsync are access/transfer clients, with rsync preferred and SCP optional.
 
+### Source protection and test evidence
+
+When an existing VM is supplied as the basis for testing, it remains the
+retained source. The toolkit may inspect a verified shut-off source and
+`template_publish` may read it without changing it. A running, managed-saved,
+unsafe, unsupported, unprepared, or failed-publication source stops the testing
+workflow. Testing never shuts down, boots, snapshots, SSHes to, provisions, or
+runs commands on that source.
+
+Preparation is a separate non-testing workflow and needs independent explicit
+authorization. It may change only a full copy whose distinct UUID and MAC
+addresses, independent disk with no source backing relationship, and independent
+NVRAM where applicable have all been verified before any boot or mutation. A
+rename or identity change alone is not a copy. Preparation preserves and
+rechecks the retained source identity and storage hashes, records copy-to-
+publication lineage, and never treats the preparation copy as the final test VM.
+If preparation becomes necessary during testing, stop and request that separate
+workflow.
+
+Every boot, SSH connection, identity comparison, lifecycle smoke test, and
+requested test command runs on a distinct working clone created with `vm_create`
+from a recorded published template/version. Clone identity, storage, NVRAM when
+applicable, publication lineage, and endpoint provenance must be verified before
+guest work. Cleanup remains limited to that clone and its owned resources.
+
+Repository acceptance is offline evidence. It uses fake host adapters, temporary
+files and directories, static fixtures, and isolated guest-script roots. Passing
+it does not prove that a distro guest boots, regenerates identity, accepts SSH,
+or completes a live requested workflow. Those claims require separate evidence
+from a disposable `vm_create` clone, and are reported as untested when that
+evidence doesn't exist.
+
 For every new dev VM, run the installed helper's `prepare` operation before
 `vm_create`, pass only `guest_user` and public-key text, and bind the unchanged
 local `creation_id` to the separately returned VM UUID and matching

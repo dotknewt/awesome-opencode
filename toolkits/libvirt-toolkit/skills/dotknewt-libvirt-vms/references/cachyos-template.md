@@ -5,6 +5,13 @@ independent project clones. CachyOS is Arch-based; Debian's `openssh-server` and
 `ssh.service`, and Ubuntu's `ssh.socket`, are not its preparation defaults.
 Guest preparation is separate from the toolkit's MCP lifecycle operations.
 
+For testing, retain the supplied source unchanged. Read-only inspection and
+`template_publish` may read it only after it is verified prepared, supported,
+shut off, and free of managed-save state. A running, managed-saved, unsafe,
+unsupported, unprepared, or failed-publication source stops the testing request.
+Report the blocker rather than shutting down, snapshotting, booting, SSHing to,
+or otherwise changing the source.
+
 ## 1. Inspect the source on the selected host
 
 Select the intended MCP connection and call `host_info`, `vm_list`, and
@@ -47,7 +54,9 @@ arbitrary memory-backing configurations. Powered-off snapshots never contain RAM
 Install `virt-clone` and libguestfs tools (`virt-inspector`, `virt-cat`,
 `virt-customize`) on the server host. Select unused `PREPARED_COPY`, absolute
 `NEW_COPY_DISK`, and absolute `NEW_COPY_NVRAM` values. Set `SOURCE_DISK` and
-`SOURCE_NVRAM` from the inspected XML, and record their hash/stat output:
+`SOURCE_NVRAM` from the inspected XML, and record the source UUID, MAC addresses,
+inactive XML, and storage hash/stat output. This is a separate non-testing
+workflow and requires independent explicit authorization:
 
 ```sh
 sha256sum "$SOURCE_DISK" "$SOURCE_NVRAM"
@@ -59,11 +68,13 @@ cmp "$SOURCE_NVRAM" "$NEW_COPY_NVRAM"
 ```
 
 Before booting the copy, confirm that its disk and NVRAM paths resolve to
-separate files from the original, its UUID/MAC are fresh, and its firmware
-configuration is retained. Copy the existing NVRAM contents, not just a blank
-VARS template: the guest's boot entries and firmware state matter. The fixed
-read-only loader remains a host prerequisite. Keep the original shut off and
-customize only the copy.
+separate files from the original, its disk has no source backing relationship,
+its UUID/MAC are fresh, and its firmware configuration is retained. A rename,
+suffix, or UUID/MAC change without verified disk and NVRAM separation is not a
+copy. Copy the existing NVRAM contents, not just a blank VARS template: the
+guest's boot entries and firmware state matter. The fixed read-only loader
+remains a host prerequisite. Keep the original shut off and customize only the
+copy.
 
 Inspect the copy's guest layout while it is shut off:
 
@@ -211,7 +222,10 @@ source's one-time mechanism.
 
 Remove source-specific enrollment, credentials, and static network identity.
 Keep the cleaned copy shut off without managed save, recheck original disk/NVRAM
-hash/stat, and eject install media using its inspected target.
+identity, inactive XML, and hash/stat, and eject install media from the copy
+using its inspected target. Record `retained source -> preparation copy ->
+published template/version` lineage. The preparation copy may be published, but
+it is never the final test clone.
 
 ## 4. Publish and create project VMs
 
@@ -227,8 +241,9 @@ On the selected MCP connection, call `template_publish` with:
 
 Replace the source placeholder with `PREPARED_COPY`; choose an unused version
 after inspecting `template_list`. A verified, already-prepared original can
-instead be the source directly. Publication flattens the disk and copies NVRAM
-into an immutable template version.
+instead be read directly by `template_publish`. Publication must preserve its
+power state, identity, XML, disk, NVRAM, and recorded hashes. It flattens the
+disk and copies NVRAM into an immutable template version.
 
 Call `vm_create` with a unique working-VM name:
 
@@ -247,7 +262,8 @@ project credential. Pass only its public key/account; do not pass its local
 `creation_id` or private-key data. Bind that creation ID only after the response
 returns the separate VM UUID and matching `guest_access` account/fingerprint.
 
-The result is shut off, with a writable linked disk, independent NVRAM, fresh
+The result is shut off and distinct from the retained source, preparation copy,
+and publication input, with a writable linked disk, independent NVRAM, fresh
 UUID/MAC, and retained firmware/memfd configuration. For user-mode networking,
 follow `guest-access.md` to inspect the path, select a distinct unused
 virtualization-host loopback port, configure the persistent passt forward while
@@ -256,17 +272,21 @@ Then invoke `dotknewt-guest-access` by name for SSH trust, authentication, trans
 execution. The toolkit does not allocate ports, run guest commands, or copy
 project files.
 
-Verify UEFI boot, `/etc/os-release`, a running `sshd.service`, and key-based
-login in disposable working clones. Assign each a unique guest hostname;
-libvirt names do not change guest hostnames. Verify the guest SSH host key
-through a trusted source and authenticate the intended regular account before
-project work. Compare machine IDs and SSH host-key fingerprints with the
-retained source and a sibling clone when available; report an unavailable
-comparison as `untested`. Unless the user or an applicable policy requires
-clone-uniqueness proof, that unavailable comparison does not block independently
-trusted guest access, transfer, or execution. After confirmed graceful shutdown,
-`snapshot_create` and `snapshot_restore` retain disk,
-configuration, and NVRAM state, preserve VM identity, and leave the VM shut off.
+Every boot, SSH connection, identity comparison, lifecycle smoke test, and
+requested test command runs on a verified `vm_create` clone. Verify UEFI boot,
+`/etc/os-release`, a running `sshd.service`, and key-based login there. Assign
+each clone a unique guest hostname; libvirt names do not change guest hostnames.
+Verify the clone's SSH host key through a trusted source and authenticate the
+intended regular account before project work. Compare its machine ID and SSH
+host-key fingerprints with recorded source evidence and a sibling clone when
+available; report an unavailable comparison as `untested`. Unless the user or an
+applicable policy requires clone-uniqueness proof, that unavailable comparison
+does not block independently trusted guest access, transfer, or execution. After
+confirmed graceful shutdown of the clone, `snapshot_create` and
+`snapshot_restore` retain its disk, configuration, and NVRAM state, preserve VM
+identity, and leave it shut off. If preparation becomes necessary during
+testing, stop and request the separate preparation workflow. Never relabel or
+modify the retained source or use the preparation copy as the test target.
 
 ## Evidence boundary
 
