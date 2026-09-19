@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "libvirt-toolkit",
   "namespace": "dotknewt",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Safe local libvirt lifecycle, template, snapshot, and verified guest-access workflows for OpenCode.",
   "license": "MIT",
   "exports": [

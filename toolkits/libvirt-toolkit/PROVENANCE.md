@@ -23,7 +23,10 @@ Version 0.1.0 migration changes were limited to native namespacing, references
 to those namespaced skills and MCP connection, installed-layout documentation,
 and toolkit packaging documents. Version 0.2.0 adds repository-native Python
 lifecycle/guest provisioning code, the project credential helper, tests, and
-updated operational references. These additions were authored in this
-repository rather than copied from the source revision above. Generated
-`__pycache__`, `.pyc`, eval payloads, tests, and planning artifacts remain
-excluded from the npm package.
+updated operational references. Version 0.2.1 adds repository-authored
+clone-only testing policy, provider and guest handoff evidence, behavioral
+evaluations, fake-adapter regression tests, and aligned distro and public
+documentation. The 0.2.0 and 0.2.1 additions were authored in this repository
+rather than copied from the source revision above. Generated `__pycache__`,
+`.pyc`, eval payloads, tests, and planning artifacts remain excluded from the
+npm package.

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.2.1 - 2026-09-19
+
+- Protected every explicitly supplied source VM from testing mutations and
+  required boot, guest access, requested tests, recovery, and cleanup to target
+  a distinct verified `vm_create` working clone. This distinction is
+  safety-critical: supplied sources must remain immutable, and verified
+  source-to-publication-to-clone lineage, clone-owned storage, independent NVRAM,
+  and endpoint binding prevent a workflow from testing the wrong VM.
+- Added evidence-bearing provider and guest-access handoffs that block probes,
+  SSH, transfer, and execution until the clone authorization evidence agrees.
+- Added fake-adapter lifecycle regressions and behavioral evaluations for safe
+  publication, clone isolation, blocked source workflows, and clone-only guest
+  actions without contacting live libvirt or VM resources.
+- Aligned Ubuntu, Debian 13, CachyOS, and public guidance on the retained-source,
+  separately authorized preparation-copy, published-template, and test-clone
+  boundaries.
+
 ## 0.2.0 - 2026-09-17
 
 - Added a self-contained project credential helper with distinct local

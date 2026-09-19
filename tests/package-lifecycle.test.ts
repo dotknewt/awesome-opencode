@@ -149,10 +149,12 @@ test("real npm tarball remains functional after disposable package source remova
 
   const extract = await command("tar", ["-xzf", archive, "-C", disposable], { cwd: root });
   assert.equal(extract.code, 0, extract.stderr);
+  const consumerEnv = { ...process.env };
+  delete consumerEnv.npm_config_allow_scripts;
   const install = await command(
     "npm",
     ["install", "--ignore-scripts", "--install-links=true", path.join(disposable, "package")],
-    { cwd: consumer },
+    { cwd: consumer, env: consumerEnv },
   );
   assert.equal(install.code, 0, install.stderr);
   await rm(disposable, { recursive: true, force: true });
@@ -303,13 +305,13 @@ test("real npm tarball remains functional after disposable package source remova
   await rename(path.join(packagedRoot, "toolkits"), path.join(packagedRoot, "toolkits.unavailable"));
   const list = await run(["list", "--project", project]);
   assert.equal(list.code, 0, list.stderr);
-  assert.match(list.stdout, /libvirt-toolkit\s+-\s+0\.2\.0/);
+  assert.match(list.stdout, /libvirt-toolkit\s+-\s+0\.2\.1/);
   assert.match(list.stdout, /project-toolkit\s+-\s+0\.1\.0/);
   const uninstall = await run(
     ["uninstall", "libvirt-toolkit", "project-toolkit", "--project", project],
   );
   assert.equal(uninstall.code, 0, uninstall.stderr);
-  assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.2\.0/);
+  assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.2\.1/);
   assert.match(uninstall.stdout, /uninstall project-toolkit@0\.1\.0/);
   await assert.rejects(access(server));
   await assert.rejects(access(todoSkill));
