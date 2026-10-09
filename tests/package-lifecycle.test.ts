@@ -45,6 +45,14 @@ function command(
   });
 }
 
+async function copyFixtureFiles(repositoryRoot: string, source: string, files: string[]): Promise<void> {
+  for (const file of files) {
+    const destination = path.join(source, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(path.join(repositoryRoot, file), destination);
+  }
+}
+
 test("global Git install builds a standalone CLI from clean source", { timeout: 180_000 }, async (t) => {
   const repositoryRoot = path.resolve(import.meta.dirname, "../..");
   const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-git-package-"));
@@ -64,6 +72,7 @@ test("global Git install builds a standalone CLI from clean source", { timeout: 
     await mkdir(path.dirname(destination), { recursive: true });
     await cp(path.join(repositoryRoot, file), destination);
   }
+  await copyFixtureFiles(repositoryRoot, source, ["bin/awesome-opencode.js", "bun.lock"]);
   await assert.rejects(access(path.join(source, "dist")), { code: "ENOENT" });
   await assert.rejects(access(path.join(source, "node_modules")), { code: "ENOENT" });
 
@@ -102,6 +111,74 @@ test("global Git install builds a standalone CLI from clean source", { timeout: 
   assert.equal(validate.code, 0, validate.stderr);
 });
 
+test("global Git install via Bun builds a standalone CLI from clean source", { timeout: 180_000 }, async (t) => {
+  const repositoryRoot = path.resolve(import.meta.dirname, "../..");
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-bun-git-package-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const source = path.join(root, "source");
+  const bunInstall = path.join(root, "bun-install");
+  const bunGlobal = path.join(root, "bun-global");
+  const bunBin = path.join(root, "bun-bin");
+  const cache = path.join(root, "bun-cache");
+  const home = path.join(root, "home");
+  const xdgConfig = path.join(root, "xdg-config");
+  await Promise.all(
+    [source, bunInstall, bunGlobal, bunBin, cache, home, xdgConfig].map((directory) => mkdir(directory)),
+  );
+
+  // Copy tracked working-tree files so local fixes are tested without carrying
+  // over ignored build output or dependencies from the developer's checkout.
+  const tracked = await command("git", ["ls-files", "-z"], { cwd: repositoryRoot });
+  assert.equal(tracked.code, 0, tracked.stderr);
+  for (const file of tracked.stdout.split("\0").filter(Boolean)) {
+    const destination = path.join(source, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(path.join(repositoryRoot, file), destination);
+  }
+  await copyFixtureFiles(repositoryRoot, source, ["bin/awesome-opencode.js", "bun.lock"]);
+  await assert.rejects(access(path.join(source, "dist")), { code: "ENOENT" });
+  await assert.rejects(access(path.join(source, "node_modules")), { code: "ENOENT" });
+
+  const env = {
+    PATH: process.env.PATH,
+    HOME: home,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_AUTHOR_NAME: "Package lifecycle test",
+    GIT_AUTHOR_EMAIL: "package-test@example.invalid",
+    GIT_COMMITTER_NAME: "Package lifecycle test",
+    GIT_COMMITTER_EMAIL: "package-test@example.invalid",
+    BUN_INSTALL: bunInstall,
+    BUN_INSTALL_GLOBAL_DIR: bunGlobal,
+    BUN_INSTALL_BIN: bunBin,
+    BUN_INSTALL_CACHE_DIR: cache,
+    XDG_CONFIG_HOME: xdgConfig,
+  };
+  // This commit belongs only to the disposable fixture, never the checkout.
+  for (const args of [["init"], ["add", "."], ["commit", "-m", "Package lifecycle fixture"]]) {
+    const result = await command("git", args, { cwd: source, env });
+    assert.equal(result.code, 0, result.stderr);
+  }
+  const install = await command(
+    "bun",
+    ["install", "--global", "--trust", `git+${pathToFileURL(source).href}`],
+    { cwd: root, env },
+  );
+  assert.equal(install.code, 0, `${install.stdout}\n${install.stderr}`);
+
+  await rm(source, { recursive: true, force: true });
+  await rm(cache, { recursive: true, force: true });
+  const binary = path.join(bunBin, "awesome-opencode");
+  await assert.doesNotReject(access(binary), "Bun Git installation must provide the declared CLI executable");
+  const version = await command(binary, ["--version"], { cwd: root, env });
+  const metadata = JSON.parse(
+    await readFile(path.join(bunGlobal, "node_modules", "awesome-opencode", "package.json"), "utf8"),
+  );
+  assert.equal(version.code, 0, version.stderr);
+  assert.equal(version.stdout.trim(), metadata.version);
+  const validate = await command(binary, ["validate"], { cwd: root, env });
+  assert.equal(validate.code, 0, validate.stderr);
+});
+
 test("real npm tarball remains functional after disposable package source removal", { timeout: 180_000 }, async (t) => {
   const repositoryRoot = path.resolve(import.meta.dirname, "../..");
   const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-package-"));
@@ -129,6 +206,7 @@ test("real npm tarball remains functional after disposable package source remova
   const archive = path.join(packed, packResult.filename);
   const packedPaths = packResult.files.map((file) => file.path);
   assert.ok(packedPaths.includes("dist/installer/src/cli.js"));
+  assert.ok(packedPaths.includes("bin/awesome-opencode.js"));
   assert.ok(packedPaths.includes("LICENSE"));
   assert.ok(packedPaths.includes("docs/architecture.md"));
   assert.ok(packedPaths.includes("toolkits/libvirt-toolkit/mcp/libvirt/libvirt_mcp/server.py"));

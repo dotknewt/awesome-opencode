@@ -1,0 +1,3 @@
+# Backlog
+
+- **AO-001 — Restore isolated OpenCode discovery compatibility** (ready). Investigate the discovery check's reliance on `opencode --pure`, which the installed OpenCode CLI no longer advertises. Update the isolated-discovery acceptance path for a supported OpenCode version without weakening its isolation guarantees. Acceptance: `bun run test:opencode:discovery` passes with an actual supported OpenCode executable and continues to fail when discovery cannot be established. Dependency: determine the installed CLI's supported isolation options. This is separate from the Bun-default migration and is not authorized for implementation yet.

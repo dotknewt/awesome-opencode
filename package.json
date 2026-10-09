@@ -4,9 +4,10 @@
   "description": "Native OpenCode toolkit catalog and installer foundation",
   "type": "module",
   "bin": {
-    "awesome-opencode": "dist/installer/src/cli.js"
+    "awesome-opencode": "bin/awesome-opencode.js"
   },
   "files": [
+    "bin",
     "dist/installer/src",
     "dist/schemas",
     "schemas",
@@ -29,21 +30,19 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/tests",
-    "test:installer": "npm run build && node --test dist/tests/toolkit-manifest.test.js dist/tests/installer-engine.test.js dist/tests/cli.test.js",
-    "test:package": "npm run build && node --test dist/tests/package-lifecycle.test.js",
-    "test:opencode:schema": "npm run build && node scripts/check-opencode.mjs schema",
-    "test:opencode:discovery": "npm run build && node scripts/check-opencode.mjs discovery",
-    "validate": "npm run build && node dist/installer/src/cli.js validate",
-    "prepare": "npm run build && node dist/installer/src/cli.js validate"
+    "test": "bun run build && node --test dist/tests",
+    "test:installer": "bun run build && node --test dist/tests/toolkit-manifest.test.js dist/tests/installer-engine.test.js dist/tests/cli.test.js",
+    "test:package": "bun run build && node --test dist/tests/package-lifecycle.test.js",
+    "test:opencode:schema": "bun run build && node scripts/check-opencode.mjs schema",
+    "test:opencode:discovery": "bun run build && node scripts/check-opencode.mjs discovery",
+    "validate": "bun run build && node dist/installer/src/cli.js validate",
+    "prepare": "tsc -p tsconfig.json && node -e \"const fs = require('node:fs'); fs.mkdirSync('dist/schemas', { recursive: true }); fs.copyFileSync('schemas/toolkit.schema.json', 'dist/schemas/toolkit.schema.json')\" && node dist/installer/src/cli.js validate"
   },
   "license": "MIT",
   "dependencies": {
+    "typescript": "5.9.2",
+    "@types/node": "24.5.2",
     "ajv": "8.20.0",
     "jsonc-parser": "3.3.1"
-  },
-  "devDependencies": {
-    "@types/node": "24.5.2",
-    "typescript": "5.9.2"
   }
 }

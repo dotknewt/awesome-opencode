@@ -32,10 +32,13 @@ in toolkit docs.
 Validate with:
 
 ```sh
-npm run validate
-npm test
+bun run validate
+bun run test
 npm pack --json --dry-run
 ```
+
+The npm pack check is retained to verify the supported npm package-consumer
+interoperability path.
 
 Add source tests for schema/reference rules and a real package lifecycle test for
 new runtime shapes. Tests must use temporary targets and fake external adapters.

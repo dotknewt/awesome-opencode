@@ -2,6 +2,11 @@
 
 `awesome-opencode` distributes self-contained, native OpenCode toolkits.
 
+## Bun-first development
+
+This repository uses **Bun** as the default package manager for development.
+Documented npm commands are retained only for interoperability checks.
+
 ## Available toolkits
 
 - `project-toolkit` installs the on-demand `dotknewt-handling-todos` skill for
@@ -30,33 +35,42 @@ VM. Restart OpenCode after an applied install, update, or uninstall.
 
 ## CLI
 
-Install the CLI globally from Git, then invoke it directly:
+Install the CLI globally from Git using Bun, then invoke it directly:
 
 ```sh
-NPM_CONFIG_ALLOW_GIT=root npm install -g https://github.com/dotknewt/awesome-opencode.git
+bun install --global --trust https://github.com/dotknewt/awesome-opencode.git
+export PATH="$(bun pm bin -g):$PATH"
 awesome-opencode --version
 awesome-opencode --help
 ```
 
-The Git install uses npm's `prepare` lifecycle to build and validate the CLI;
-leave lifecycle scripts enabled. `NPM_CONFIG_ALLOW_GIT=root` permits the direct
+The Git install uses the `prepare` lifecycle to build and validate the CLI;
+`--trust` explicitly permits that dependency lifecycle script. `bun pm bin -g`
+prints the global executable directory itself, commonly `$HOME/.bun/bin`, which
+must be on `PATH` when invoking `awesome-opencode` directly.
+
+npm remains supported as an interoperability path for Git installation:
+
+```sh
+NPM_CONFIG_ALLOW_GIT=root npm install --global https://github.com/dotknewt/awesome-opencode.git
+awesome-opencode --version
+```
+
+Leave lifecycle scripts enabled. `NPM_CONFIG_ALLOW_GIT=root` permits the direct
 Git dependency on npm versions that require explicit Git-source permission.
-Ensure `$(npm prefix -g)/bin` is on your `PATH`. For example, with an npm prefix
-of `$HOME/.local`, the executable is `$HOME/.local/bin/awesome-opencode`.
-Inspect the global installation with `npm list -g awesome-opencode --all`.
 
 When working in this repository's source checkout, initialize it separately:
 
 ```sh
-npm ci
-npm run build
-npx awesome-opencode --help
+bun install --frozen-lockfile
+bun run build
+bun dist/installer/src/cli.js --help
 ```
 
-Inside the checkout, `npx awesome-opencode` selects the local package before the
-global executable, so it needs local dependencies and build output. Plain
-`npm list` also reports the checkout's dependencies, not the global installation.
-Use `awesome-opencode` directly to run the global CLI.
+The explicit `dist` entrypoint deterministically runs this checkout's built CLI;
+`bunx awesome-opencode` may instead resolve a registry or globally installed
+package because a package's own executable is not installed into its local
+`node_modules/.bin`. Use `awesome-opencode` directly to run the global CLI.
 
 For toolkit operations, use an absolute target path:
 
