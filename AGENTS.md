@@ -26,6 +26,19 @@ that toolkit's strict `toolkit.json`. Toolkit versions are independent from the
   sources; initial state discovery/shared ancestors are outside the
   stale-resource guarantee.
 
+## Design and review workflow
+
+- Before turning external behavior into a design constraint, cite primary-source
+  evidence for the OpenCode version being tested. Distinguish documented,
+  source-inspected, and experimentally verified behavior; mark unresolved facts
+  as verification prerequisites rather than inferring behavior from doc silence.
+- Ask users for product decisions; resolve filesystem, API, and compatibility
+  facts through investigation. Group independent decisions into one interview
+  round within tool limits; defer questions whose prerequisites remain unsettled.
+- After substantive review corrections, re-read the revised sections and their
+  dependent invariants/tests against each finding before calling the artifact
+  reviewed. Report any remaining evidence gaps explicitly.
+
 ## Validation
 
 Use Node.js 22 or newer and Python 3.10 or newer. Before reporting a change

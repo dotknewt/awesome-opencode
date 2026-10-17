@@ -17,6 +17,7 @@ Documented npm commands are retained only for interoperability checks.
 
 ## Requirements
 
+- Bun for installing the CLI.
 - Linux and Node.js 22 or newer for installer mutations.
 - The **util-linux** implementation of `flock` on `PATH`. The parent installer
   opens the target lock file, a short-lived `flock` child locks that inherited
@@ -48,16 +49,6 @@ The Git install uses the `prepare` lifecycle to build and validate the CLI;
 `--trust` explicitly permits that dependency lifecycle script. `bun pm bin -g`
 prints the global executable directory itself, commonly `$HOME/.bun/bin`, which
 must be on `PATH` when invoking `awesome-opencode` directly.
-
-npm remains supported as an interoperability path for Git installation:
-
-```sh
-NPM_CONFIG_ALLOW_GIT=root npm install --global https://github.com/dotknewt/awesome-opencode.git
-awesome-opencode --version
-```
-
-Leave lifecycle scripts enabled. `NPM_CONFIG_ALLOW_GIT=root` permits the direct
-Git dependency on npm versions that require explicit Git-source permission.
 
 When working in this repository's source checkout, initialize it separately:
 
