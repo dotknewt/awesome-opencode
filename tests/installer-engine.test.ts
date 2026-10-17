@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { chmod, cp, lstat, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { mock } from "node:test";
 import { mkdtemp } from "node:fs/promises";
 
 import { InstallerEngine, InstallerError } from "../installer/src/installer-engine.js";
@@ -194,7 +197,7 @@ test("skill-only plans omit configuration candidates even when their filesystem 
   }
 });
 
-test("an unselected installed MCP toolkit does not force explicit skill-only configuration access", async () => {
+test("update verifies all installed MCP ownership even when a skill-only toolkit is requested", async () => {
   const f = await fixture();
   await addSkillOnlyToolkit(f.catalogRoot);
   const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
@@ -205,10 +208,415 @@ test("an unselected installed MCP toolkit does not force explicit skill-only con
   await rm(f.target.configPath);
   await symlink(outside, f.target.configPath);
 
-  const explicit = await engine.planUpdate(["skill-toolkit"]);
-  assert.equal(explicit.reads.some((read) => f.target.configCandidates.includes(read.path)), false);
+  await assert.rejects(() => engine.planUpdate(["skill-toolkit"]), /symlink/i);
   await assert.rejects(() => engine.planUpdate([]), /symlink/i);
   assert.equal(await readFile(outside, "utf8"), configBytes);
+});
+
+async function relocatedFixture() {
+  const f = await fixture();
+  await addSkillOnlyToolkit(f.catalogRoot);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit", "skill-toolkit"]);
+  const movedProject = path.join(f.root, "relocated");
+  await cp(f.projectRoot, movedProject, { recursive: true });
+  const target = await resolveTarget({ scope: "project", projectRoot: movedProject });
+  return { ...f, movedProject, target, engine: new InstallerEngine({ catalogRoot: f.catalogRoot, target }) };
+}
+
+test("requestedToolkitOnlyChangesPayloadAndVersion", async () => {
+  const f = await relocatedFixture();
+  const oldState = await readInstallerState(f.target);
+  const requestedManifest = JSON.parse(await readFile(path.join(f.toolkitRoot, "toolkit.json"), "utf8"));
+  requestedManifest.version = "0.2.0";
+  await writeFile(path.join(f.toolkitRoot, "toolkit.json"), JSON.stringify(requestedManifest, null, 2));
+  await writeFile(path.join(f.toolkitRoot, "skills", "dotknewt-demo", "SKILL.md"), "updated\n");
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  assert.deepEqual(plan.changes.map((change) => change.path).filter((name) => name.includes("dotknewt-skill-toolkit")), []);
+  assert.equal(plan.changes.every((change) => change.path.startsWith(f.target.payloadRoot) || change.path === f.target.statePath || f.target.configCandidates.includes(change.path)), true);
+  await f.engine.apply(plan);
+  const state = await readInstallerState(f.target);
+  assert.equal(state.toolkits["libvirt-toolkit"]?.version, "0.2.0");
+  assert.equal(state.toolkits["skill-toolkit"]?.version, oldState.toolkits["skill-toolkit"]?.version);
+  assert.deepEqual(state.toolkits["skill-toolkit"]?.files.map(({ path: filePath }) => path.relative(f.target.payloadRoot, filePath)), oldState.toolkits["skill-toolkit"]?.files.map(({ path: filePath }) => path.relative(path.join(f.projectRoot, ".opencode"), filePath)));
+  assert.equal(await readFile(path.join(f.target.payloadRoot, "skills", "dotknewt-skill-toolkit", "SKILL.md"), "utf8"), "skill-toolkit\n");
+  assert.equal(await readFile(path.join(f.projectRoot, ".opencode", "skills", "dotknewt-skill-toolkit", "SKILL.md"), "utf8"), "skill-toolkit\n");
+});
+
+test("allInstalledRecordsAreVerifiedAndRebased", async () => {
+  const f = await relocatedFixture();
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  assert.ok(plan.reads.some((read) => read.path === path.join(f.target.payloadRoot, "skills", "dotknewt-skill-toolkit", "SKILL.md")));
+  assert.ok(plan.changes.every((change) => !change.path.startsWith(`${f.projectRoot}${path.sep}`)));
+  await f.engine.apply(plan);
+  const state = await readInstallerState(f.target);
+  assert.ok(state.toolkits["skill-toolkit"]?.files.every((file) => file.path.startsWith(f.target.payloadRoot)));
+  assert.equal(state.toolkits["skill-toolkit"]?.configPath, f.target.configPath);
+});
+
+test("unrequestedMissingCatalogIsPreserved", async () => {
+  const f = await relocatedFixture();
+  await rm(path.join(f.catalogRoot, "skill-toolkit"), { recursive: true });
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  assert.ok(plan.toolkits.includes("libvirt-toolkit"));
+  assert.equal(plan.summary.some((line) => line.includes("skill-toolkit@")), false);
+  await f.engine.apply(plan);
+  assert.ok((await readInstallerState(f.target)).toolkits["skill-toolkit"]);
+});
+
+test("requestedMissingCatalogFails", async () => {
+  const f = await relocatedFixture();
+  await rm(path.join(f.catalogRoot, "skill-toolkit"), { recursive: true });
+  await assert.rejects(() => f.engine.planUpdate(["skill-toolkit"]), /skill-toolkit|not found|catalog/i);
+});
+
+test("requestedManifestAddRemoveChangesOnlyRequestedInventory", async () => {
+  const f = await relocatedFixture();
+  const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.exports = manifest.exports.filter((item: { kind: string }) => item.kind !== "asset");
+  await mkdir(path.join(f.toolkitRoot, "skills", "dotknewt-added"), { recursive: true });
+  await writeFile(path.join(f.toolkitRoot, "skills", "dotknewt-added", "SKILL.md"), "added\n");
+  manifest.exports.push({ kind: "skill", source: "skills/dotknewt-added", destination: "skills/dotknewt-added" });
+  manifest.mcp = [];
+  manifest.version = "0.2.0";
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  assert.ok(plan.changes.every(({ path: changed }) => !changed.startsWith(`${f.projectRoot}${path.sep}`)));
+  await f.engine.apply(plan);
+  const state = await readInstallerState(f.target);
+  assert.equal(state.toolkits["libvirt-toolkit"]?.files.length, 2);
+  assert.ok(state.toolkits["libvirt-toolkit"]?.files.some(({ path: filePath }) => filePath.endsWith("dotknewt-added/SKILL.md")));
+  assert.equal(state.toolkits["skill-toolkit"]?.files.length, 1);
+  assert.ok(state.toolkits["skill-toolkit"]?.files.every(({ path: filePath }) => filePath.includes("dotknewt-skill-toolkit")));
+  assert.equal(state.toolkits["libvirt-toolkit"]?.configEntries.length, 0);
+});
+
+test("changedMissingHashModeOrUnownedCurrentFileConflicts", async (t) => {
+  for (const kind of ["changed", "missing", "mode", "unowned"] as const) await t.test(kind, async () => {
+    const f = await relocatedFixture();
+    const owned = path.join(f.target.payloadRoot, "skills", "dotknewt-skill-toolkit", "SKILL.md");
+    if (kind === "changed") await writeFile(owned, "changed\n");
+    if (kind === "missing") await rm(owned);
+    if (kind === "mode") await chmod(owned, 0o600);
+    if (kind === "unowned") {
+      const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+      await mkdir(path.join(f.toolkitRoot, "skills", "dotknewt-new"), { recursive: true });
+      await writeFile(path.join(f.toolkitRoot, "skills", "dotknewt-new", "SKILL.md"), "new\n");
+      manifest.exports.push({ kind: "skill", source: "skills/dotknewt-new", destination: "skills/dotknewt-new" });
+      await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+      const destination = path.join(f.target.payloadRoot, "skills", "dotknewt-new", "SKILL.md");
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, "new\n");
+    }
+    await assert.rejects(() => f.engine.planUpdate(["libvirt-toolkit"]), /modified|missing|conflict|mode/i);
+  });
+});
+
+test("symlinkAndSpecialFileCurrentDestinationConflicts", async (t) => {
+  for (const kind of ["symlink", "fifo"] as const) await t.test(kind, async () => {
+    const f = await relocatedFixture();
+    const owned = path.join(f.target.payloadRoot, "skills", "dotknewt-skill-toolkit", "SKILL.md");
+    await rm(owned);
+    if (kind === "symlink") await symlink(path.join(f.root, "outside"), owned);
+    else assert.equal(spawnSync("mkfifo", [owned]).status, 0);
+    await assert.rejects(() => f.engine.planUpdate(["libvirt-toolkit"]), /symlink|special|regular/i);
+  });
+});
+
+test("duplicateMcpOwnershipAcrossRecordsFails", async () => {
+  const f = await relocatedFixture();
+  const state = await readInstallerState(f.target);
+  state.toolkits["skill-toolkit"]!.configEntries = structuredClone(state.toolkits["libvirt-toolkit"]!.configEntries);
+  await writeFile(f.target.statePath, JSON.stringify(state));
+  await assert.rejects(() => f.engine.planUpdate(["libvirt-toolkit"]), /duplicate MCP|ownership/i);
+});
+
+test("noMcpSkipsAllConfigIo", async () => {
+  const f = await fixture();
+  await setFixtureMcp(f.toolkitRoot, []);
+  await addSkillOnlyToolkit(f.catalogRoot);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  const bad = path.join(f.projectRoot, "opencode.json");
+  await symlink(path.join(f.root, "missing-config"), bad);
+  const configPaths = new Set(f.target.configCandidates.map((candidate) => path.resolve(candidate)));
+  const restores: Array<{ mock: { restore(): void } }> = [];
+  const probes: string[] = [];
+  try {
+    for (const method of ["access", "lstat", "stat", "realpath", "readFile", "open"] as const) {
+      const original = fsPromises[method] as (...args: never[]) => unknown;
+      restores.push(mock.method(fsPromises, method, ((filePath: unknown, ...args: never[]) => {
+        if (typeof filePath === "string" && configPaths.has(path.resolve(filePath))) probes.push(path.resolve(filePath));
+        return original(filePath as never, ...args);
+      }) as never));
+    }
+    syncBuiltinESMExports();
+    const plan = await engine.planUpdate(["libvirt-toolkit"]);
+    assert.equal(plan.reads.some((read) => configPaths.has(path.resolve(read.path))), false);
+    assert.deepEqual(probes, []);
+  } finally {
+    for (const restore of restores) restore.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("skillOnlyRebasesConfigPathWithoutConfigRead", async () => {
+  const f = await fixture();
+  await setFixtureMcp(f.toolkitRoot, []);
+  const original = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await original.install(["libvirt-toolkit"]);
+  const moved = path.join(f.root, "moved");
+  await cp(f.projectRoot, moved, { recursive: true });
+  const target = await resolveTarget({ scope: "project", projectRoot: moved });
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target });
+  const plan = await engine.planUpdate(["libvirt-toolkit"]);
+  assert.equal(plan.reads.some((read) => target.configCandidates.includes(read.path)), false);
+  await engine.apply(plan);
+  assert.equal((await readInstallerState(target)).toolkits["libvirt-toolkit"]?.configPath, target.configPath);
+});
+
+test("configRenameUpdatesAllRecordMetadata", async () => {
+  const f = await relocatedFixture();
+  const config = path.join(f.movedProject, "opencode.json");
+  await rename(config, path.join(f.movedProject, "opencode.jsonc"));
+  const target = await resolveTarget({ scope: "project", projectRoot: f.movedProject });
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target });
+  const plan = await engine.planUpdate(["libvirt-toolkit"]);
+  await engine.apply(plan);
+  const state = await readInstallerState(target);
+  assert.ok(Object.values(state.toolkits).every((installed) => installed.configPath === path.join(f.movedProject, "opencode.jsonc")));
+});
+
+test("sameRootConfigRenameUpdatesAllRecordMetadata", async () => {
+  const f = await fixture();
+  await addSkillOnlyToolkit(f.catalogRoot);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit", "skill-toolkit"]);
+  await rename(f.target.configPath, path.join(f.projectRoot, "opencode.jsonc"));
+  const repair = new InstallerEngine({ catalogRoot: f.catalogRoot, target: await resolveTarget({ scope: "project", projectRoot: f.projectRoot }) });
+  await repair.apply(await repair.planUpdate(["libvirt-toolkit"]));
+  const state = await readInstallerState(repair.target);
+  assert.ok(Object.values(state.toolkits).every((record) => record.configPath === path.join(f.projectRoot, "opencode.jsonc")));
+});
+
+test("dryRunUsesPendingJournalClassification", async () => {
+  const f = await fixture();
+  const interrupted = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target, faults: { interruptAfterWrites: 1 } });
+  await assert.rejects(() => interrupted.install(["libvirt-toolkit"]), /interrupted/i);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  const plan = await engine.planUpdate([], { dryRun: true });
+  assert.equal(plan.recoveryPending, true);
+  assert.deepEqual(plan.changes, []);
+  assert.deepEqual(plan.observerPaths, []);
+});
+
+test("unchangedUnrequestedFileChangedBeforeApplyAborts", async () => {
+  const f = await relocatedFixture();
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  const unchanged = path.join(f.target.payloadRoot, "skills", "dotknewt-skill-toolkit", "SKILL.md");
+  assert.ok(plan.reads.some((read) => read.path === unchanged));
+  await writeFile(unchanged, "raced\n");
+  await assert.rejects(() => f.engine.apply(plan), /planning read changed/i);
+});
+
+test("candidateOnlyPolicyHasNoObserverPaths", async () => {
+  const f = await relocatedFixture();
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  assert.deepEqual(plan.observerPaths, []);
+});
+
+test("candidateAbsentToPresentBeforeApplyAborts", async () => {
+  const f = await relocatedFixture();
+  const alternate = path.join(f.movedProject, "opencode.jsonc");
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  await writeFile(alternate, "{}\n");
+  await assert.rejects(() => f.engine.apply(plan), /planning read changed|configuration candidate/i);
+});
+
+test("requestedUpgradeIntroducesFirstMcp", async () => {
+  const f = await fixture();
+  await setFixtureMcp(f.toolkitRoot, []);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.mcp = [{ name: "dotknewt-libvirt", type: "local", command: ["uv"], entrypoint: "managed/server/server.py", enabled: true }];
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  const plan = await engine.planUpdate(["libvirt-toolkit"]);
+  assert.ok(plan.reads.some((read) => f.target.configCandidates.includes(read.path)));
+  assert.ok(plan.changes.some((change) => f.target.configCandidates.includes(change.path)));
+  await engine.apply(plan);
+  assert.equal((await readInstallerState(f.target)).toolkits["libvirt-toolkit"]?.configEntries[0]?.name, "dotknewt-libvirt");
+});
+
+test("requestedNewMcpNameRejectsUnownedAlternateCandidateEntries", async (t) => {
+  for (const alternateKind of ["identical", "different"] as const) await t.test(alternateKind, async () => {
+    const f = await fixture();
+    const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+    await engine.install(["libvirt-toolkit"]);
+    const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const newEntry = {
+      type: "local",
+      command: ["uv", "run", "--script", path.join(f.target.managedRoot, "libvirt-toolkit", "managed/server/server.py")],
+      enabled: true,
+    };
+    manifest.mcp.push({ name: "dotknewt-new", type: "local", command: ["uv", "run", "--script"], entrypoint: "managed/server/server.py", enabled: true });
+    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+    const alternatePath = path.join(f.projectRoot, "opencode.jsonc");
+    const alternateEntry = alternateKind === "identical" ? newEntry : { ...newEntry, command: ["other-command"] };
+    const alternateBytes = JSON.stringify({ mcp: { "dotknewt-new": alternateEntry } }, null, 2);
+    await writeFile(alternatePath, alternateBytes);
+    const stateBefore = await readFile(f.target.statePath, "utf8");
+    const selectedBefore = await readFile(f.target.configPath, "utf8");
+    const payloadBefore = await readFile(path.join(f.target.managedRoot, "libvirt-toolkit", "managed/server/server.py"), "utf8");
+
+    await assert.rejects(() => engine.planUpdate(["libvirt-toolkit"]), /unowned configuration conflict|configuration.*conflict|dotknewt-new/i);
+    assert.equal(await readFile(f.target.statePath, "utf8"), stateBefore);
+    assert.equal(await readFile(f.target.configPath, "utf8"), selectedBefore);
+    assert.equal(await readFile(alternatePath, "utf8"), alternateBytes);
+    assert.equal(await readFile(path.join(f.target.managedRoot, "libvirt-toolkit", "managed/server/server.py"), "utf8"), payloadBefore);
+  });
+});
+
+test("requestedReplacementDuringPlanningKeepsVerifiedBeforeImage", async () => {
+  const f = await fixture();
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.version = "0.2.0";
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  const source = path.join(f.toolkitRoot, "server-source", "server.py");
+  await writeFile(source, "# requested replacement\n");
+  const destination = path.join(f.target.managedRoot, "libvirt-toolkit", "managed/server/server.py");
+  const racingBytes = "intervening replacement\n";
+  let raced = false;
+  const originalReadFile = fsPromises.readFile;
+  const restore = mock.method(fsPromises, "readFile", (async (filePath: unknown, ...args: unknown[]) => {
+    const result = await (originalReadFile as (...parameters: never[]) => Promise<unknown>)(filePath as never, ...args as never[]);
+    if (!raced && typeof filePath === "string" && path.resolve(filePath) === manifestPath) {
+      raced = true;
+      await writeFile(destination, racingBytes);
+    }
+    return result;
+  }) as never);
+  syncBuiltinESMExports();
+  try {
+    const plan = await engine.planUpdate(["libvirt-toolkit"]);
+    assert.equal(raced, true);
+    const change = plan.changes.find(({ path: changePath }) => changePath === destination);
+    assert.ok(change);
+    assert.equal(Buffer.from(change.before.content!, change.before.encoding === "base64" ? "base64" : "utf8").toString("utf8"), "# server\n");
+    await assert.rejects(() => engine.apply(plan), /precondition changed/i);
+    assert.equal(await readFile(destination, "utf8"), racingBytes);
+  } finally {
+    restore.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("requestedRemovalDuringPlanningKeepsVerifiedBeforeImage", async () => {
+  const f = await fixture();
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.exports = manifest.exports.filter((item: { kind: string }) => item.kind !== "asset");
+  manifest.mcp = [];
+  manifest.version = "0.2.0";
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  const destination = path.join(f.target.managedRoot, "libvirt-toolkit", "managed/server/server.py");
+  const racingBytes = "intervening removal\n";
+  let raced = false;
+  const originalReadFile = fsPromises.readFile;
+  const restore = mock.method(fsPromises, "readFile", (async (filePath: unknown, ...args: unknown[]) => {
+    const result = await (originalReadFile as (...parameters: never[]) => Promise<unknown>)(filePath as never, ...args as never[]);
+    if (!raced && typeof filePath === "string" && path.resolve(filePath) === manifestPath) {
+      raced = true;
+      await writeFile(destination, racingBytes);
+    }
+    return result;
+  }) as never);
+  syncBuiltinESMExports();
+  try {
+    const plan = await engine.planUpdate(["libvirt-toolkit"]);
+    assert.equal(raced, true);
+    const change = plan.changes.find(({ path: changePath }) => changePath === destination);
+    assert.ok(change);
+    assert.equal(Buffer.from(change.before.content!, change.before.encoding === "base64" ? "base64" : "utf8").toString("utf8"), "# server\n");
+    await assert.rejects(() => engine.apply(plan), /precondition changed/i);
+    assert.equal(await readFile(destination, "utf8"), racingBytes);
+  } finally {
+    restore.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test("requestedFirstMcpRejectsExistingUnownedName", async () => {
+  const f = await fixture();
+  await setFixtureMcp(f.toolkitRoot, []);
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  await writeFile(f.target.configPath, JSON.stringify({ mcp: { "dotknewt-libvirt": { type: "local", command: ["other"], enabled: true } } }));
+  const manifestPath = path.join(f.toolkitRoot, "toolkit.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.mcp = [{ name: "dotknewt-libvirt", type: "local", command: ["uv"], entrypoint: "managed/server/server.py", enabled: true }];
+  await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+  await assert.rejects(() => engine.planUpdate(["libvirt-toolkit"]), /unowned configuration conflict/i);
+});
+
+test("requestedUpgradeRemovesMcp", async () => {
+  const f = await fixture();
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await engine.install(["libvirt-toolkit"]);
+  await setFixtureMcp(f.toolkitRoot, []);
+  const plan = await engine.planUpdate(["libvirt-toolkit"]);
+  await engine.apply(plan);
+  assert.equal(JSON.parse(await readFile(f.target.configPath, "utf8")).mcp["dotknewt-libvirt"], undefined);
+});
+
+test("stateChangedBeforeApplyAborts", async () => {
+  const f = await relocatedFixture();
+  const plan = await f.engine.planUpdate(["libvirt-toolkit"]);
+  assert.ok(plan.reads.some((read) => read.path === f.target.statePath) || plan.changes.some((change) => change.path === f.target.statePath));
+  await writeFile(f.target.statePath, `${await readFile(f.target.statePath, "utf8")}\n`);
+  await assert.rejects(() => f.engine.apply(plan), /planning read changed|precondition changed/i);
+});
+
+test("distinctOverlappingRootsFailBeforeFurtherResourcePlanning", async () => {
+  const f = await fixture();
+  const original = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+  await original.install(["libvirt-toolkit"]);
+  const currentProject = path.join(f.target.payloadRoot, "relocated");
+  await mkdir(currentProject, { recursive: true });
+  const target = await resolveTarget({ scope: "project", projectRoot: currentProject });
+  await mkdir(target.stateRoot, { recursive: true });
+  await cp(f.target.statePath, target.statePath);
+  await symlink(path.join(f.root, "missing-config"), target.configPath);
+  const noCatalog = new InstallerEngine({ catalogRoot: path.join(f.root, "absent-catalog"), target });
+  await assert.rejects(() => noCatalog.planUpdate(["libvirt-toolkit"]), /overlap|previous.*current|root/i);
+});
+
+test("unsafeJournalDryRunAndUpdateFailClosedWithoutFallthrough", async () => {
+  const f = await fixture();
+  const interrupted = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target, faults: { interruptAfterWrites: 1 } });
+  await assert.rejects(() => interrupted.install(["libvirt-toolkit"]), /interrupted/i);
+  const journal = JSON.parse(await readFile(f.target.journalPath, "utf8"));
+  journal.changes[0].path = path.join(f.root, "old-root", "outside");
+  await writeFile(f.target.journalPath, JSON.stringify(journal));
+  const movedProject = path.join(f.root, "journal-current");
+  await cp(f.projectRoot, movedProject, { recursive: true });
+  const target = await resolveTarget({ scope: "project", projectRoot: movedProject });
+  const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target });
+  const journalBefore = await readFile(target.journalPath, "utf8");
+  await assert.rejects(() => engine.planUpdate([], { dryRun: true }), /unsafe transaction journal|outside|old-root/i);
+  assert.equal(await readFile(target.journalPath, "utf8"), journalBefore);
+  await assert.rejects(() => engine.update([]), /unsafe transaction journal|outside|old-root/i);
+  assert.equal(await readFile(target.journalPath, "utf8"), journalBefore);
+  assert.equal(await lstat(path.join(target.payloadRoot, "skills", "dotknewt-demo", "SKILL.md")).then(() => true, () => false), true);
 });
 
 test("skill-only to MCP and MCP to skill-only transitions select and clean the actual config", async () => {

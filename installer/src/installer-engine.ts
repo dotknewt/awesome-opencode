@@ -4,12 +4,16 @@ import path from "node:path";
 import { configEntry, parseConfig, removeConfigEntry, setConfigEntry, structurallyEqual } from "./config.js";
 import { assertSafePath } from "./path-safety.js";
 import { loadToolkitPayload, type ToolkitPayload } from "./payload.js";
+import { assertInstalledRelativePath } from "./resource-policy.js";
+import { proveHistoricalRoot } from "./relocation.js";
+import { listRepairConfigSources, selectRepairConfiguration } from "./repair-config.js";
 import { readInstallerState, type InstallerState, type InstalledToolkit, type OwnedFile } from "./state.js";
 import { resolveConfigurationPath, type TargetPaths } from "./target.js";
 import {
   applyTransaction,
   contentSnapshot,
   hasPendingJournal,
+  inspectPendingJournal,
   snapshot,
   snapshotHash,
   type TransactionChange,
@@ -31,6 +35,7 @@ export interface InstallerPlan {
   summary: string[];
   dryRun: boolean;
   recoveryPending: boolean;
+  observerPaths: string[];
 }
 
 export interface PlanOptions { dryRun?: boolean }
@@ -105,7 +110,7 @@ export class InstallerEngine {
 
   async apply(plan: InstallerPlan): Promise<void> {
     if (plan.dryRun) return;
-    try { await applyTransaction(this.target, plan.changes, plan.reads, this.faults); } catch (error) { throw this.wrap(error); }
+    try { await applyTransaction(this.target, plan.changes, plan.reads, this.faults, { observerPaths: plan.observerPaths }); } catch (error) { throw this.wrap(error); }
   }
 
   async install(names: string[], options: PlanOptions = {}): Promise<InstallerPlan> {
@@ -137,6 +142,7 @@ export class InstallerEngine {
 
   private async plan(operation: InstallerOperation, requested: string[], options: PlanOptions): Promise<InstallerPlan> {
     try {
+      if (operation === "update") return await this.planUpdateOnly(requested, options);
       const recoveryPending = await hasPendingJournal(this.target);
       if (options.dryRun && recoveryPending) {
         return {
@@ -147,6 +153,7 @@ export class InstallerEngine {
           summary: ["interrupted transaction recovery is pending; no recovery or target writes were performed"],
           dryRun: true,
           recoveryPending: true,
+          observerPaths: [],
         };
       }
       const stateBefore = await snapshot(this.target.statePath, true);
@@ -154,8 +161,8 @@ export class InstallerEngine {
       const stateAfterRead = await snapshot(this.target.statePath, true);
       if (!this.sameSnapshot(stateBefore, stateAfterRead)) throw new Error(`installer state changed during planning: ${this.target.statePath}`);
       this.validateStatePaths(state);
-      const names = operation === "update" && requested.length === 0 ? Object.keys(state.toolkits).sort() : [...new Set(requested)];
-      if (names.length === 0 && operation !== "update") throw new Error(`${operation} requires at least one toolkit name`);
+      const names = [...new Set(requested)];
+      if (names.length === 0) throw new Error(`${operation} requires at least one toolkit name`);
       const next = cloneState(state);
       const changes = new Map<string, TransactionChange>();
       const reads = new Map<string, TransactionRead>();
@@ -305,10 +312,176 @@ export class InstallerEngine {
         summary,
         dryRun: options.dryRun ?? false,
         recoveryPending,
+        observerPaths: [],
       };
     } catch (error) {
       throw this.wrap(error);
     }
+  }
+
+  private async planUpdateOnly(requested: string[], options: PlanOptions): Promise<InstallerPlan> {
+    const pending = await inspectPendingJournal(this.target);
+    if (options.dryRun && pending === "pending") return {
+      operation: "update", toolkits: [...new Set(requested)], changes: [], reads: [], summary: ["interrupted transaction recovery is pending; no recovery or target writes were performed"],
+      dryRun: true, recoveryPending: true, observerPaths: [],
+    };
+
+    const stateBefore = await snapshot(this.target.statePath, true);
+    const state = await readInstallerState(this.target);
+    const stateAfterRead = await snapshot(this.target.statePath, true);
+    if (!this.sameSnapshot(stateBefore, stateAfterRead)) throw new Error(`installer state changed during planning: ${this.target.statePath}`);
+    const proof = proveHistoricalRoot(state, this.target);
+    const previousRoot = path.resolve(proof.previousPayloadRoot);
+    const currentRoot = path.resolve(this.target.payloadRoot);
+    if (previousRoot !== currentRoot && (previousRoot.startsWith(`${currentRoot}${path.sep}`) || currentRoot.startsWith(`${previousRoot}${path.sep}`))) {
+      throw new Error(`distinct previous and current payload roots overlap: ${previousRoot} and ${currentRoot}`);
+    }
+
+    const installedNames = Object.keys(state.toolkits).sort();
+    const names = requested.length === 0 ? installedNames : [...new Set(requested)];
+    for (const name of names) if (!state.toolkits[name]) throw new Error(`${name} is not installed`);
+
+    const next = cloneState(proof.rebasedState);
+    const changes = new Map<string, TransactionChange>();
+    const reads = new Map<string, TransactionRead>();
+    const summary: string[] = [];
+    const ownedByPath = new Map<string, OwnedFile>();
+    const verifiedSnapshots = new Map<string, Awaited<ReturnType<typeof snapshot>>>();
+
+    // Verify every state-owned file at its derived current destination before
+    // reading requested catalog payloads or selecting configuration sources.
+    for (const [name, installed] of Object.entries(proof.rebasedState.toolkits)) {
+      for (const file of installed.files) {
+        const relative = path.relative(currentRoot, file.path).split(path.sep).join("/");
+        assertInstalledRelativePath(name, relative);
+        await assertSafePath(file.path, "file");
+        const actual = await snapshot(file.path);
+        if (!actual.exists || snapshotHash(actual) !== file.hash || actual.mode !== file.mode) throw new Error(`modified or missing owned file for ${name}: ${file.path}`);
+        reads.set(file.path, { path: file.path, expected: actual, description: `verify owned file ${file.path}` });
+        verifiedSnapshots.set(file.path, actual);
+        ownedByPath.set(file.path, file);
+      }
+    }
+
+    const payloads = new Map<string, ToolkitPayload>();
+    for (const name of names) payloads.set(name, await loadToolkitPayload(this.catalogRoot, name));
+    for (const payload of payloads.values()) for (const file of payload.files) assertInstalledRelativePath(payload.manifest.name, file.relativePath);
+
+    const installedMcp = Object.values(state.toolkits).some((record) => record.configEntries.length > 0);
+    const requestedMcp = [...payloads.values()].some((payload) => payload.manifest.mcp.length > 0);
+    const configNeeded = installedMcp || requestedMcp;
+    let selectedConfigPath: string | undefined;
+    let configBefore: Awaited<ReturnType<typeof snapshot>> | undefined;
+    let configSource: string | undefined;
+    let configDocument: ReturnType<typeof parseConfig> | undefined;
+    let observerPaths: string[] = [];
+
+    if (configNeeded) {
+      const sources = listRepairConfigSources(this.target, process.env);
+      const staleConfigPaths = new Set(Object.values(state.toolkits).map(({ configPath }) => path.resolve(configPath)));
+      observerPaths = [];
+      for (const source of sources) {
+        if (!path.isAbsolute(source.path) || path.normalize(source.path) !== source.path) throw new Error(`invalid configuration source evidence: ${source.path}`);
+        const sourcePath = path.resolve(source.path);
+        if (previousRoot !== currentRoot && (sourcePath === previousRoot || sourcePath.startsWith(`${previousRoot}${path.sep}`))) {
+          throw new Error(`refusing stale configuration source under previous payload root: ${source.path}`);
+        }
+        if (previousRoot !== currentRoot && staleConfigPaths.has(sourcePath)) throw new Error(`refusing stale configuration source matching prior state provenance: ${source.path}`);
+        if (source.role === "observer") observerPaths.push(sourcePath);
+      }
+      const selection = await selectRepairConfiguration(this.target, state, proof, sources);
+      for (const read of selection.reads) reads.set(read.path, read);
+      selectedConfigPath = selection.path;
+      for (const [name, entries] of Object.entries(selection.entries)) next.toolkits[name]!.configEntries = entries;
+      if (!selectedConfigPath && requestedMcp) {
+        const candidateSnapshots = selection.reads;
+        const existing = candidateSnapshots.filter((read) => read.expected.exists);
+        if (existing.length > 1) throw new Error(`multiple supported OpenCode config files found: ${existing.map(({ path: candidate }) => candidate).join(", ")}`);
+        selectedConfigPath = existing[0]?.path ?? path.resolve(this.target.defaultConfigPath);
+      }
+      if (!selectedConfigPath) throw new Error("installed MCP ownership has no selected configuration");
+      const selectedPath = selectedConfigPath;
+      const selectedRead = selection.reads.find((read) => path.resolve(read.path) === path.resolve(selectedPath));
+      configBefore = selectedRead?.expected ?? await snapshot(selectedConfigPath, true);
+      configSource = selection.source ?? (configBefore.exists ? configBefore.content ?? "" : "{}\n");
+      configDocument = parseConfig(configSource);
+      for (const installed of Object.values(next.toolkits)) installed.configPath = selectedPath;
+
+      const installedEntryNames = new Set(Object.values(state.toolkits).flatMap((record) => record.configEntries.map(({ name }) => name)));
+      for (const payload of payloads.values()) for (const contribution of payload.manifest.mcp) {
+        if (installedEntryNames.has(contribution.name)) continue;
+        for (const sourceRead of selection.reads) {
+          if (!sourceRead.expected.exists) continue;
+          const sourcePath = path.resolve(sourceRead.path);
+          if (sourcePath === path.resolve(selectedPath)) continue; // Keep the ordinary first-MCP conflict diagnostic.
+          const sourceDocument = parseConfig(sourceRead.expected.content ?? "");
+          if (configEntry(sourceDocument, contribution.name) !== undefined) {
+            throw new Error(`unowned MCP configuration conflict for ${contribution.name} at selected ${selectedPath} and alternate ${sourceRead.path}; manually resolve the duplicate and consolidate this MCP entry before retrying`);
+          }
+        }
+      }
+    }
+
+    for (const name of names) {
+      const installed = state.toolkits[name]!;
+      const payload = payloads.get(name)!;
+      const desiredFiles: OwnedFile[] = [];
+      for (const file of payload.files) {
+        const destination = path.resolve(this.target.payloadRoot, file.relativePath);
+        if (!destination.startsWith(`${currentRoot}${path.sep}`)) throw new Error(`payload destination escapes target: ${file.relativePath}`);
+        await assertSafePath(destination, "any");
+        const existingOwner = ownedByPath.get(destination);
+        if (existingOwner && existingOwner.owner !== name) throw new Error(`destination owned by ${existingOwner.owner}: ${destination}`);
+        const before = verifiedSnapshots.get(destination) ?? await snapshot(destination);
+        if (before.exists && !existingOwner) throw new Error(`unowned destination conflict (identical files are not adopted): ${destination}`);
+        const desired: OwnedFile = { path: destination, hash: file.hash, mode: file.mode, owner: name };
+        desiredFiles.push(desired);
+        ownedByPath.set(destination, desired);
+        if (!before.exists || snapshotHash(before) !== file.hash || before.mode !== file.mode) {
+          changes.set(destination, { path: destination, before, after: contentSnapshot(file.content, file.mode), description: `write ${destination}` });
+          reads.delete(destination);
+        }
+      }
+      for (const stale of proof.rebasedState.toolkits[name]!.files) if (!desiredFiles.some((file) => file.path === stale.path)) {
+        const before = verifiedSnapshots.get(stale.path) ?? await snapshot(stale.path);
+        changes.set(stale.path, { path: stale.path, before, after: { exists: false }, description: `delete stale ${stale.path}` });
+        reads.delete(stale.path);
+      }
+
+      const desiredEntries: InstalledToolkit["configEntries"] = [];
+      for (const contribution of payload.manifest.mcp) {
+        const desired = managedMcp(payload, this.target, contribution);
+        const prior = proof.rebasedState.toolkits[name]!.configEntries.find(({ name: entryName }) => entryName === contribution.name);
+        const actual = configEntry(configDocument!, contribution.name);
+        if (!prior && actual !== undefined) throw new Error(`unowned configuration conflict: ${contribution.name}`);
+        if (prior && !structurallyEqual(actual, prior.expected)) throw new Error(`modified owned configuration entry: ${contribution.name}`);
+        if (!structurallyEqual(actual, desired)) {
+          configSource = setConfigEntry(configSource!, contribution.name, desired, !configBefore!.exists);
+          configDocument = parseConfig(configSource);
+        }
+        desiredEntries.push({ name: contribution.name, expected: desired });
+      }
+      for (const stale of proof.rebasedState.toolkits[name]!.configEntries) if (!desiredEntries.some(({ name: entryName }) => entryName === stale.name)) {
+        const actual = configEntry(configDocument!, stale.name);
+        if (!structurallyEqual(actual, stale.expected)) throw new Error(`modified owned configuration entry: ${stale.name}`);
+        configSource = removeConfigEntry(configSource!, stale.name);
+        configDocument = parseConfig(configSource);
+      }
+      next.toolkits[name] = { version: payload.manifest.version, files: desiredFiles, configPath: selectedConfigPath ?? next.toolkits[name]!.configPath, configEntries: desiredEntries };
+      summary.push(`update ${name}@${payload.manifest.version}`);
+    }
+
+    if (configNeeded && selectedConfigPath && configBefore) {
+      const initial = configBefore.exists ? configBefore.content ?? "" : "{}\n";
+      if (configSource !== initial) {
+        changes.set(selectedConfigPath, { path: selectedConfigPath, before: configBefore, after: contentSnapshot(configSource!, configBefore.mode ?? 0o644, true), description: `edit OpenCode configuration ${selectedConfigPath}` });
+        reads.delete(selectedConfigPath);
+      }
+    }
+    const stateSource = `${JSON.stringify(next, null, 2)}\n`;
+    if (stateBefore.content !== stateSource) changes.set(this.target.statePath, { path: this.target.statePath, before: stateBefore, after: contentSnapshot(stateSource, 0o600, true), description: "update installer ownership state" });
+    else reads.set(this.target.statePath, { path: this.target.statePath, expected: stateBefore, description: "verify installer ownership state" });
+    return { operation: "update", toolkits: names, changes: [...changes.values()], reads: [...reads.values()], summary, dryRun: options.dryRun ?? false, recoveryPending: pending === "pending", observerPaths };
   }
 
   private async verifyOwnedFiles(name: string, installed: InstalledToolkit, reads: Map<string, TransactionRead>): Promise<void> {
