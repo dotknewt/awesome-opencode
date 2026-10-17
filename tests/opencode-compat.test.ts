@@ -29,7 +29,7 @@ test("generated MCP config validates against the public native OpenCode schema",
   assert.match(result.stdout, /validates against public OpenCode/);
 });
 
-test("installed skills are discoverable by an optional isolated OpenCode CLI", { timeout: 60_000 }, async (t) => {
+test("installed skills are discoverable by the isolated OpenCode v2 config API harness", { timeout: 150_000 }, async (t) => {
   const result = await run(["discovery"]);
   if (result.code === 77) {
     t.skip(result.stdout.trim());

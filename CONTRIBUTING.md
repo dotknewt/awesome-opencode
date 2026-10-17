@@ -25,15 +25,26 @@ uv run --isolated --python 3.13 --with 'mcp==2.2.0' \
   -s toolkits/libvirt-toolkit/mcp/libvirt/tests -p 'test_*.py' -v
 
 bun run test:opencode:schema
-bun run test:opencode:discovery
+
+# Actual OpenCode evidence gate: Linux x86_64, bubblewrap, exact v2.0.30 binary.
+test "$(uname -m)" = "x86_64"
+command -v bwrap
+OPENCODE="$(command -v opencode)"
+test -x "$OPENCODE"
+test "$("$OPENCODE" --version)" = "opencode v2.0.30"
+node scripts/check-opencode-config-matrix.mjs --opencode "$OPENCODE"
+node scripts/check-opencode.mjs discovery --opencode "$OPENCODE"
 ```
 
-The schema check requires HTTPS access to `https://opencode.ai/config.json`.
-Discovery requires an actual `opencode` executable. The helper exits 77 when a
-prerequisite is absent; dedicated CI jobs install their prerequisites and treat
-every nonzero result, including 77, as failure. `bun run test` may surface those two
-checks as explicit local skips, but the separate acceptance commands are the
-release evidence.
+The OpenCode schema check requires HTTPS access to
+`https://opencode.ai/config.json`. The matrix requires Linux x86_64, `bwrap`, the
+exact OpenCode v2.0.30 executable, Node.js 22+, `/usr/lib`, and
+`/lib64/ld-linux-x86-64.so.2` for the reviewed sandbox runtime mounts. It fails
+on missing prerequisites; it does not skip or fall back to an unisolated run.
+The discovery test also requires the actual executable. Some repository test
+wrappers may report optional prerequisite skips; run the explicit acceptance
+commands above and treat any skip/nonzero result as incomplete evidence. No CI
+configuration or automatic prerequisite installation is asserted here.
 
 Before submitting changes:
 
@@ -48,7 +59,9 @@ Before submitting changes:
   tests, evals, caches, bytecode, TypeScript, or planning artifacts.
 - Keep the npm Git-install and tarball lifecycle tests green; npm remains the
   supported compatibility path while Bun is the development default.
-- Do not add live credentials, start services, alter a real OpenCode config, or
-  perform libvirt/VM operations.
+- Do not add live credentials, start shared or consumer services, alter a real
+  OpenCode config, or perform libvirt/VM operations. The explicitly approved
+  OpenCode evidence check may start only its disposable server inside the
+  reviewed bubblewrap/network namespace using temporary config/data/state.
 
 See [docs/authoring.md](docs/authoring.md) for the manifest contract.
