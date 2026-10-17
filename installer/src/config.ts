@@ -72,3 +72,65 @@ export function structurallyEqual(left: unknown, right: unknown): boolean {
   }
   return false;
 }
+
+export interface CommandPathEdit {
+  index: number;
+  before: string;
+  after: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Compare an owned entry against its original state value. The only tolerated
+ * difference is the generated final command path, either still at its old
+ * value or already rebased to the current managed root.
+ */
+export function matchRelocatedEntry(
+  actual: unknown,
+  expected: unknown,
+  previousManagedRoot: string,
+  currentManagedRoot: string,
+): CommandPathEdit[] {
+  if (!isRecord(expected) || !isRecord(actual) || !Array.isArray(expected.command) || !Array.isArray(actual.command)) {
+    throw new Error("owned MCP entry shape changed");
+  }
+  const expectedCommand = expected.command;
+  const actualCommand = actual.command;
+  if (expectedCommand.length === 0 || expectedCommand.length !== actualCommand.length ||
+      !expectedCommand.every((item) => typeof item === "string") || !actualCommand.every((item) => typeof item === "string")) {
+    throw new Error("owned MCP command shape changed");
+  }
+  const index = expectedCommand.length - 1;
+  const before = expectedCommand[index] as string;
+  const actualFinal = actualCommand[index] as string;
+  const relative = before.startsWith(`${previousManagedRoot}/`) ? before.slice(previousManagedRoot.length + 1) : undefined;
+  if (!relative || relative.includes("\\") || relative.split("/").some((part) => part === "" || part === "." || part === "..")) {
+    throw new Error("owned MCP final command path is not under the previous managed root");
+  }
+  const after = `${currentManagedRoot}/${relative}`;
+  if (actualFinal !== before && actualFinal !== after) throw new Error("owned MCP final command path changed");
+  const normalizedActual = { ...actual, command: [...actualCommand.slice(0, index), before] };
+  if (!structurallyEqual(normalizedActual, expected)) throw new Error("owned MCP entry fields changed");
+  return actualFinal === before && after !== before ? [{ index, before, after }] : [];
+}
+
+/** Apply command-index replacements as narrow JSONC edits, preserving comments. */
+export function editOwnedCommandPaths(source: string, name: string, edits: readonly CommandPathEdit[]): string {
+  parseConfig(source);
+  let value: unknown = source;
+  for (const edit of [...edits].sort((a, b) => b.index - a.index)) {
+    if (!Number.isInteger(edit.index) || edit.index < 0) throw new Error("invalid owned command path edit index");
+    const parsed = parseConfig(value as string);
+    const entry = (parsed.value.mcp as Record<string, unknown> | undefined)?.[name];
+    if (!isRecord(entry) || !Array.isArray(entry.command) || entry.command[edit.index] !== edit.before) {
+      throw new Error(`owned command path changed before edit: ${name}[${edit.index}]`);
+    }
+    const options = { formattingOptions: formatting(value as string) };
+    value = applyEdits(value as string, modify(value as string, ["mcp", name, "command", edit.index], edit.after, options));
+  }
+  parseConfig(value as string);
+  return value as string;
+}
