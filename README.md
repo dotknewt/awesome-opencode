@@ -131,11 +131,13 @@ When configuration is not required, its candidate paths and targets remain
 untouched; file-only toolkits can therefore coexist with consumer-managed config
 symlinks and unrelated configuration shapes.
 
-Whenever configuration is required, the strict boundary is unchanged: every
-supported candidate is checked, multiple candidates and malformed JSON/JSONC are
-refused, and symlinks or non-files are rejected rather than followed or replaced.
-A mixed file-and-MCP batch fails before payload or state writes when this check
-fails. Selecting only a file-only toolkit for install/uninstall does not make an
+For install/uninstall and first-MCP selection, multiple existing supported
+configuration candidates are refused. When update has installed MCP ownership,
+it resolves the unique owner: an unrelated valid candidate may remain, but
+competing entries or split ownership are refused. Malformed JSON/JSONC and
+symlinked or non-file candidates are refused rather than followed or replaced.
+A mixed file-and-MCP batch fails before payload or state writes when these checks
+fail. Selecting only a file-only toolkit for install/uninstall does not make an
 unselected installed MCP toolkit's configuration part of that operation. Update
 is different: its all-record verification includes installed MCP ownership even
 when the named update payloads are file-only.
