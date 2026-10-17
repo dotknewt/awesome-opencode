@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { assertSafePath, ensureSafeParents, fsyncDirectory } from "./path-safety.js";
 import { hashContent } from "./payload.js";
+import { classifyMutationResource } from "./resource-policy.js";
 import type { TargetPaths } from "./target.js";
 
 export interface ResourceSnapshot {
@@ -28,9 +29,13 @@ export interface TransactionChange {
   description: string;
 }
 
-interface Journal {
+export interface Journal {
   formatVersion: 1;
   changes: TransactionChange[];
+}
+
+export interface TransactionOptions {
+  observerPaths?: readonly string[];
 }
 
 interface LockOwner {
@@ -58,13 +63,6 @@ export interface TransactionFaults {
 
 export class InterruptedTransactionError extends Error {}
 
-function assertAllowedResource(target: TargetPaths, filePath: string): void {
-  const resolved = path.resolve(filePath);
-  const payloadRoot = path.resolve(target.payloadRoot);
-  const allowedConfig = target.configCandidates.some((candidate) => path.resolve(candidate) === resolved);
-  if (!allowedConfig && !resolved.startsWith(`${payloadRoot}${path.sep}`)) throw new Error(`transaction resource escapes target: ${filePath}`);
-}
-
 export async function snapshot(filePath: string, text = false): Promise<ResourceSnapshot> {
   const kind = await assertSafePath(filePath, "any");
   if (kind === "missing") return { exists: false };
@@ -84,6 +82,132 @@ export async function snapshot(filePath: string, text = false): Promise<Resource
 
 function sameSnapshot(left: ResourceSnapshot, right: ResourceSnapshot): boolean {
   return left.exists === right.exists && left.content === right.content && left.encoding === right.encoding && left.mode === right.mode;
+}
+
+function validateSnapshot(value: unknown, where: string): ResourceSnapshot {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`malformed ${where} snapshot`);
+  const snapshotValue = value as Record<string, unknown>;
+  if (snapshotValue.exists === false) {
+    if (Object.keys(snapshotValue).some((key) => key !== "exists")) throw new Error(`malformed ${where} snapshot`);
+    return { exists: false };
+  }
+  if (snapshotValue.exists !== true || typeof snapshotValue.content !== "string" ||
+      (snapshotValue.encoding !== "utf8" && snapshotValue.encoding !== "base64") ||
+      !Number.isInteger(snapshotValue.mode) || (snapshotValue.mode as number) < 0 || (snapshotValue.mode as number) > 0o777 ||
+      Object.keys(snapshotValue).some((key) => !["exists", "content", "encoding", "mode"].includes(key))) {
+    throw new Error(`malformed ${where} snapshot`);
+  }
+  if (snapshotValue.encoding === "base64") {
+    const decoded = Buffer.from(snapshotValue.content, "base64");
+    if (decoded.toString("base64") !== snapshotValue.content) throw new Error(`malformed ${where} base64 snapshot`);
+  }
+  return snapshotValue as unknown as ResourceSnapshot;
+}
+
+function unsafeJournalError(target: TargetPaths, reason: string, resource?: string): Error {
+  const resourceContext = resource ? `; resource ${resource}` : "";
+  return new Error(
+    `unsafe transaction journal ${target.journalPath}${resourceContext}: ${reason}. ` +
+    "Do not replay this journal at a new path. Manually inspect and resolve the journal, or recover it at its original location before retrying.",
+  );
+}
+
+function validateJournalResources(value: unknown, target: TargetPaths): Journal {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("malformed transaction journal");
+  const candidate = value as Record<string, unknown>;
+  if (candidate.formatVersion !== 1 || !Array.isArray(candidate.changes) ||
+      Object.keys(candidate).some((key) => key !== "formatVersion" && key !== "changes")) {
+    throw new Error("malformed transaction journal");
+  }
+  const changes: TransactionChange[] = [];
+  const paths: string[] = [];
+  for (const item of candidate.changes) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw unsafeJournalError(target, "malformed transaction journal change");
+    }
+    const entry = item as Record<string, unknown>;
+    const knownResource = typeof entry.path === "string" ? entry.path : undefined;
+    if (typeof entry.path !== "string" || typeof entry.description !== "string" ||
+        Object.keys(entry).some((key) => !["path", "before", "after", "description"].includes(key))) {
+      throw unsafeJournalError(target, "malformed transaction journal change (missing or unknown fields)", knownResource);
+    }
+    const pathValue = entry.path;
+    try {
+      // This performs lexical/canonical checks and permits only installed mutation resources.
+      classifyMutationResource(target, pathValue);
+    } catch (error) {
+      throw unsafeJournalError(target, (error as Error).message, pathValue);
+    }
+    paths.push(pathValue);
+    try {
+      changes.push({
+        path: pathValue,
+        before: validateSnapshot(entry.before, "journal before"),
+        after: validateSnapshot(entry.after, "journal after"),
+        description: entry.description,
+      });
+    } catch (error) {
+      throw unsafeJournalError(target, (error as Error).message, pathValue);
+    }
+  }
+  for (let index = 0; index < paths.length; index += 1) {
+    for (let other = index + 1; other < paths.length; other += 1) {
+      const left = paths[index]!;
+      const right = paths[other]!;
+      if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) {
+        throw new Error(`duplicate or prefix-colliding transaction resources: ${left} and ${right}`);
+      }
+    }
+  }
+  return { formatVersion: 1, changes };
+}
+
+export { validateJournalResources };
+
+function validateTransactionInputs(
+  target: TargetPaths,
+  changes: TransactionChange[],
+  reads: TransactionRead[],
+  options: TransactionOptions,
+): void {
+  const mutations = new Set<string>();
+  for (const change of changes) {
+    classifyMutationResource(target, change.path);
+    validateSnapshot(change.before, "transaction before");
+    validateSnapshot(change.after, "transaction after");
+    mutations.add(change.path);
+  }
+  const mutationPaths = changes.map(({ path: resourcePath }) => resourcePath);
+  for (let index = 0; index < mutationPaths.length; index += 1) {
+    for (let other = index + 1; other < mutationPaths.length; other += 1) {
+      const left = mutationPaths[index]!;
+      const right = mutationPaths[other]!;
+      if (left === right || left.startsWith(`${right}${path.sep}`) || right.startsWith(`${left}${path.sep}`)) {
+        throw new Error(`duplicate or prefix-colliding transaction resources: ${left} and ${right}`);
+      }
+    }
+  }
+  const observers = new Set<string>();
+  for (const observer of options.observerPaths ?? []) {
+    if (!path.isAbsolute(observer) || path.normalize(observer) !== observer || observer.endsWith(path.sep) || observer.includes("\\") || observer.includes("\0")) {
+      throw new Error(`invalid observer path: ${observer}`);
+    }
+    if (observer === target.journalPath || observer === target.lockPath || observer.startsWith(`${target.lockPath}.`) || observer === target.statePath ||
+        observer.startsWith(`${target.statePath}.`) || observer.startsWith(`${target.journalPath}.`) ||
+        /\.awesome-opencode-[0-9]+-[0-9a-f-]+\.tmp$/.test(observer)) throw new Error(`control path cannot be observed: ${observer}`);
+    if ([...mutations].some((mutation) => mutation === observer || mutation.startsWith(`${observer}${path.sep}`) || observer.startsWith(`${mutation}${path.sep}`))) {
+      throw new Error(`observer path overlaps transaction mutation: ${observer}`);
+    }
+    observers.add(observer);
+  }
+  const readPaths = new Set<string>();
+  for (const read of reads) {
+    if (!read || typeof read.path !== "string" || typeof read.description !== "string") throw new Error("malformed transaction read");
+    validateSnapshot(read.expected, "planning read");
+    if (!observers.has(read.path)) classifyMutationResource(target, read.path);
+    if (readPaths.has(read.path)) throw new Error(`duplicate planning read: ${read.path}`);
+    readPaths.add(read.path);
+  }
 }
 
 async function durableRemove(filePath: string): Promise<void> {
@@ -284,27 +408,60 @@ async function publishJournal(target: TargetPaths, journal: Journal, faults: Tra
 }
 
 async function readJournal(target: TargetPaths): Promise<Journal> {
-  const source = await snapshot(target.journalPath, true);
-  if (!source.exists) throw new Error(`transaction journal disappeared: ${target.journalPath}`);
-  const journal = JSON.parse(source.content ?? "") as Journal;
-  if (journal.formatVersion !== 1 || !Array.isArray(journal.changes)) throw new Error("malformed transaction journal");
-  return journal;
+  try {
+    const source = await snapshot(target.journalPath, true);
+    if (!source.exists) throw new Error("selected transaction journal disappeared");
+    let value: unknown;
+    try { value = JSON.parse(source.content ?? ""); }
+    catch (error) { throw new Error(`malformed transaction journal JSON: ${(error as Error).message}`, { cause: error }); }
+    return validateJournalResources(value, target);
+  } catch (error) {
+    const reason = (error as Error).message;
+    if (reason.startsWith(`unsafe transaction journal ${target.journalPath}`)) throw error;
+    throw unsafeJournalError(target, reason);
+  }
+}
+
+export async function inspectPendingJournal(target: TargetPaths): Promise<"none" | "pending"> {
+  let kind: Awaited<ReturnType<typeof assertSafePath>>;
+  try { kind = await assertSafePath(target.journalPath, "any"); }
+  catch (error) { throw unsafeJournalError(target, (error as Error).message, target.journalPath); }
+  if (kind === "missing") return "none";
+  if (kind !== "file") throw unsafeJournalError(target, "selected journal is not a regular file");
+  await readJournal(target);
+  return "pending";
 }
 
 async function guardedRecover(target: TargetPaths): Promise<void> {
-  if (!(await hasPendingJournal(target))) return;
+  let kind: Awaited<ReturnType<typeof assertSafePath>>;
+  try { kind = await assertSafePath(target.journalPath, "any"); }
+  catch (error) { throw unsafeJournalError(target, (error as Error).message, target.journalPath); }
+  if (kind === "missing") return;
+  if (kind !== "file") throw unsafeJournalError(target, "selected journal is not a regular file");
   const journal = await readJournal(target);
   for (const change of journal.changes) {
-    assertAllowedResource(target, change.path);
-    const actual = await snapshot(change.path, change.before.encoding === "utf8" || change.after.encoding === "utf8");
+    let actual: ResourceSnapshot;
+    try {
+      actual = await snapshot(change.path, change.before.encoding === "utf8" || change.after.encoding === "utf8");
+    } catch (error) {
+      throw unsafeJournalError(target, (error as Error).message, change.path);
+    }
     if (!sameSnapshot(actual, change.before) && !sameSnapshot(actual, change.after)) {
-      throw new Error(`intervening edit prevents recovery: ${change.path}`);
+      throw unsafeJournalError(target, "intervening edit prevents recovery", change.path);
     }
   }
   for (const change of [...journal.changes].reverse()) {
-    const actual = await snapshot(change.path, change.before.encoding === "utf8" || change.after.encoding === "utf8");
-    if (!sameSnapshot(actual, change.before) && !sameSnapshot(actual, change.after)) throw new Error(`intervening edit prevents recovery: ${change.path}`);
-    await restore(change.path, change.before);
+    let actual: ResourceSnapshot;
+    try {
+      actual = await snapshot(change.path, change.before.encoding === "utf8" || change.after.encoding === "utf8");
+    } catch (error) {
+      throw unsafeJournalError(target, (error as Error).message, change.path);
+    }
+    if (!sameSnapshot(actual, change.before) && !sameSnapshot(actual, change.after)) {
+      throw unsafeJournalError(target, "intervening edit prevents recovery", change.path);
+    }
+    try { await restore(change.path, change.before); }
+    catch (error) { throw unsafeJournalError(target, (error as Error).message, change.path); }
   }
   await durableRemove(target.journalPath);
 }
@@ -314,7 +471,9 @@ export async function applyTransaction(
   changes: TransactionChange[],
   reads: TransactionRead[] = [],
   faults: TransactionFaults = {},
+  options: TransactionOptions = {},
 ): Promise<void> {
+  validateTransactionInputs(target, changes, reads, options);
   const lock = await acquireLock(target, faults);
   let leaveInterrupted = false;
   let ownsJournal = false;
@@ -322,12 +481,10 @@ export async function applyTransaction(
     if (faults.pauseAfterLock) await faults.pauseAfterLock();
     await guardedRecover(target);
     for (const read of reads) {
-      assertAllowedResource(target, read.path);
       const actual = await snapshot(read.path, read.expected.encoding === "utf8");
       if (!sameSnapshot(actual, read.expected)) throw new Error(`planning read changed before apply: ${read.path}`);
     }
     for (const change of changes) {
-      assertAllowedResource(target, change.path);
       const actual = await snapshot(change.path, change.before.encoding === "utf8" || change.after.encoding === "utf8");
       if (!sameSnapshot(actual, change.before)) throw new Error(`precondition changed before apply: ${change.path}`);
     }
