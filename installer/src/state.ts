@@ -33,7 +33,18 @@ export const emptyInstallerState = (): InstallerState => ({ formatVersion: 1, to
 const identityPattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const isIdentity = (value: string): boolean => value.length <= 64 && identityPattern.test(value);
 
-function validateState(value: unknown): asserts value is InstallerState {
+function assertCanonicalAbsolutePath(value: string, label: string): void {
+  if (!value.startsWith("/") || value.includes("\0") || value.includes("\\") || value === "/" || value.endsWith("/")) {
+    throw new Error(`${label} must be a canonical absolute path without traversal or aliases`);
+  }
+  const components = value.slice(1).split("/");
+  if (components.some((component) => component === "" || component === "." || component === "..")) {
+    throw new Error(`${label} must be a canonical absolute path without traversal or aliases`);
+  }
+  if (path.posix.normalize(value) !== value) throw new Error(`${label} must be a canonical absolute path`);
+}
+
+export function validateState(value: unknown): asserts value is InstallerState {
   if (typeof value !== "object" || value === null) throw new Error("installer state must be an object");
   const state = value as Partial<InstallerState>;
   if (state.formatVersion !== 1 || typeof state.toolkits !== "object" || state.toolkits === null || Array.isArray(state.toolkits)) {
@@ -48,17 +59,25 @@ function validateState(value: unknown): asserts value is InstallerState {
     if (typeof record.version !== "string" || typeof record.configPath !== "string" || !Array.isArray(record.files) || !Array.isArray(record.configEntries)) {
       throw new Error(`malformed state for ${name}`);
     }
+    assertCanonicalAbsolutePath(record.configPath, `config path for ${name}`);
     for (const file of record.files) {
       if (!file || typeof file.path !== "string" || typeof file.hash !== "string" || typeof file.mode !== "number" || file.owner !== name) {
         throw new Error(`malformed file ownership state for ${name}`);
       }
-      const normalized = path.resolve(file.path);
-      if (fileOwners.has(normalized)) throw new Error(`duplicate file ownership in state: ${normalized} (${fileOwners.get(normalized)}, ${name})`);
-      fileOwners.set(normalized, name);
+      assertCanonicalAbsolutePath(file.path, `owned file path for ${name}`);
+      if (!/^[a-f0-9]{64}$/.test(file.hash)) throw new Error(`invalid SHA-256 hash in file ownership state for ${name}`);
+      if (!Number.isInteger(file.mode) || file.mode < 0 || file.mode > 0o777) throw new Error(`invalid file mode in ownership state for ${name}`);
+      if (fileOwners.has(file.path)) throw new Error(`duplicate file ownership in state: ${file.path} (${fileOwners.get(file.path)}, ${name})`);
+      for (const [other, owner] of fileOwners) {
+        if (other.startsWith(`${file.path}/`) || file.path.startsWith(`${other}/`)) {
+          throw new Error(`prefix-colliding file ownership in state: ${other} (${owner}) and ${file.path} (${name})`);
+        }
+      }
+      fileOwners.set(file.path, name);
     }
     for (const entry of record.configEntries) {
       if (!entry || typeof entry.name !== "string" || !isIdentity(entry.name) || !("expected" in entry)) throw new Error(`malformed config ownership state for ${name}`);
-      const key = `${path.resolve(record.configPath)}\0${entry.name}`;
+      const key = entry.name;
       if (configOwners.has(key)) throw new Error(`duplicate MCP configuration ownership in state: ${entry.name} (${configOwners.get(key)}, ${name})`);
       configOwners.set(key, name);
     }

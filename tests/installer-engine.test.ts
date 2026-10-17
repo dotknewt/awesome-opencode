@@ -338,6 +338,31 @@ test("rejects special source files", async () => {
   await assert.rejects(() => new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target }).planInstall(["libvirt-toolkit"]), /special file/i);
 });
 
+test("refuses current-owned symlink and special-file leaves", async () => {
+  for (const kind of ["symlink", "fifo"] as const) {
+    const f = await fixture();
+    const owned = path.join(f.target.payloadRoot, "skills", "dotknewt-demo", "SKILL.md");
+    await mkdir(path.dirname(owned), { recursive: true });
+    if (kind === "symlink") {
+      const outside = path.join(f.root, "outside-owned-file");
+      await writeFile(outside, "preserve me\n");
+      await symlink(outside, owned);
+    } else {
+      const created = spawnSync("mkfifo", [owned]);
+      assert.equal(created.status, 0, created.stderr.toString());
+    }
+    await mkdir(f.target.stateRoot, { recursive: true });
+    await writeFile(f.target.statePath, JSON.stringify({ formatVersion: 1, toolkits: {
+      "libvirt-toolkit": {
+        version: "0.1.0", files: [{ path: owned, hash: "a".repeat(64), mode: 0o644, owner: "libvirt-toolkit" }],
+        configPath: f.target.configPath, configEntries: [],
+      },
+    } }));
+    const engine = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target });
+    await assert.rejects(() => engine.planUninstall(["libvirt-toolkit"]), /symlink|special|regular file/i);
+  }
+});
+
 test("rollback, durable recovery, and deterministic live-lock concurrency", async () => {
   const f = await fixture();
   const failing = new InstallerEngine({ catalogRoot: f.catalogRoot, target: f.target, faults: { failAfterWrites: 1 } });
@@ -718,7 +743,7 @@ test("rejects duplicate file and MCP ownership in persisted state", async () => 
   await mkdir(f.target.stateRoot, { recursive: true });
   const record = (owner: string) => ({
     version: "0.1.0",
-    files: [{ path: path.join(f.target.payloadRoot, "skills", "shared", "SKILL.md"), hash: "hash", mode: 0o644, owner }],
+    files: [{ path: path.join(f.target.payloadRoot, "skills", "shared", "SKILL.md"), hash: "a".repeat(64), mode: 0o644, owner }],
     configPath: f.target.configPath,
     configEntries: [{ name: "dotknewt-shared", expected: { enabled: true } }],
   });
@@ -726,6 +751,7 @@ test("rejects duplicate file and MCP ownership in persisted state", async () => 
   await assert.rejects(() => readInstallerState(f.target), /duplicate file ownership/i);
   const second = record("two");
   second.files[0]!.path = path.join(f.target.payloadRoot, "skills", "other", "SKILL.md");
+  second.configPath = path.join(f.projectRoot, ".opencode", "opencode.json");
   await writeFile(f.target.statePath, JSON.stringify({ formatVersion: 1, toolkits: { one: record("one"), two: second } }));
   await assert.rejects(() => readInstallerState(f.target), /duplicate MCP configuration ownership/i);
 
@@ -743,7 +769,7 @@ test("refuses ownership state paths outside the selected target", async () => {
     toolkits: {
       "libvirt-toolkit": {
         version: "0.1.0",
-        files: [{ path: outside, hash: "ignored", mode: 0o644, owner: "libvirt-toolkit" }],
+        files: [{ path: outside, hash: "a".repeat(64), mode: 0o644, owner: "libvirt-toolkit" }],
         configPath: f.target.configPath,
         configEntries: [],
       },
