@@ -99,3 +99,20 @@ acceptance commands in [CONTRIBUTING.md](../CONTRIBUTING.md); no ignored scratch
 artifact is required. Discovery passed for the specific builtin readiness,
 installed skill identities/paths, and disabled MCP entry described above; it
 does not establish broader runtime or external-source behavior.
+
+## Relocation boundary
+
+Installer relocation is an update-only ownership operation, not an OpenCode
+source-precedence guarantee. Configuration handling is bounded by the
+installer's existing candidate policy; the v2.0.30 evidence above measured only
+the listed 18 fixture cases. It does not claim completeness for external
+overrides or effective merged runtime configuration. Update at a moved root
+verifies every installed current copy and rebases every installed state record,
+while requested toolkits' payloads/versions change (or every installed toolkit
+is updated when no names are supplied). Unsafe
+historical ownership/journal references and distinct overlapping previous/current
+payload roots are refused. Initial selected-state discovery and shared ancestors
+may access prior paths; the bounded stale-resource guarantee starts after
+provenance is established. Same-root rename permits current-root access. No
+stale-resource access after provenance is claimed, but no general observer or
+relocation support for install, uninstall, list, or other operations is implied.

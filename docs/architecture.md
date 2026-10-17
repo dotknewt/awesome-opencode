@@ -50,21 +50,26 @@ match their hash/mode. MCP ownership is per `(config path, entry name)` and the
 entry is compared structurally, so harmless JSON key ordering does not matter
 but semantic local edits block update/uninstall.
 
-Target resolution computes candidate paths without accessing them. Listing and a
-plan whose selected desired manifests and selected installed records contain no
-MCP entries omit configuration from both transaction reads and changes. Their
+Target resolution computes candidate paths without accessing them. Listing and
+file-only install/uninstall operations omit configuration when their selected
+desired manifests and selected installed records contain no MCP entries. Their
 file/state ownership checks still apply, but unrelated configuration candidates
 are not inspected, parsed, snapshotted, created, or written. A recorded
 `configPath` on a legacy file-only state record remains valid inert metadata.
 
-If any selected desired manifest contributes MCP or any selected installed
-record owns an MCP entry, planning strictly resolves configuration. It rejects
+Update verifies every installed record, even when toolkit names were explicitly
+selected. It omits configuration only when no installed record owns MCP and no
+requested update manifest contributes MCP. Otherwise it resolves configuration
+strictly. Install/uninstall similarly require configuration when any selected
+desired manifest contributes MCP or any selected installed record owns an MCP
+entry. Resolution rejects
 ambiguous, malformed, duplicate-key, symlinked, and non-file candidates, records
 all candidates in the race-safe transaction read set, and verifies prior owned
 entries. This includes removing the last entry, no-catalog uninstall, and
 no-name update. Mixed file/MCP batches therefore fail atomically at that boundary
-before payload or state writes. An explicit file-only operation does not pull an
-unselected installed MCP toolkit into configuration planning.
+before payload or state writes. An explicit file-only install/uninstall does not
+pull an unselected installed MCP toolkit into configuration planning; update
+does account for all installed MCP ownership.
 
 Mutations are journaled with complete before/after snapshots and applied with
 atomic replace, fsync, and precondition rechecks. Ordinary failures attempt
@@ -80,6 +85,22 @@ diagnostics and legacy recovery, not the concurrency primitive.
 
 Directories are never recursively removed during normal uninstall, preserving
 user additions. Path checks reject symlink parents/leaves and special resources.
+
+### Update across a moved root
+
+`update` can repair a moved project or selected global config root when prior
+ownership can be proven safely. It verifies the current copy of every installed
+toolkit and its owned MCP state, then rebases every installed ownership record.
+Requested toolkit payloads are loaded/replaced and their versions changed; an
+unnamed update loads and updates all installed toolkit payloads. Unsafe
+historical state or journal references fail
+closed. Distinct overlapping previous/current payload roots are rejected before
+further planning; same-root rename current access is permitted. Initial
+selected-state discovery and shared ancestors are outside the bounded stale
+resource guarantee. After provenance is established, no stale-resource reads or
+writes are expected. This is not a general observer guarantee, and no other
+installer operation is a relocation operation. Dry-run reports the plan without
+recovery or writes.
 
 ## Native OpenCode integration
 

@@ -111,24 +111,34 @@ TODO/backlog trigger matches; it is not an always-loaded rule.
 input is recommended for auditable automation. `--global` uses
 `$XDG_CONFIG_HOME/opencode`, falling back to `~/.config/opencode`. Exactly one
 target selector is required. `update` without names updates installed toolkits
-only. A dry run performs no recovery, locking, directory creation, config edit,
-or state write.
+only. After moving an installed project or selected global config root, `update`
+can prove prior ownership, verify every installed toolkit's current copy, and
+rebase all installed records. Payloads and versions change only for explicitly
+requested toolkits; without names, all installed toolkits are updated. A dry run
+performs no recovery, locking, directory
+creation, config edit, or state write.
 
-Listing and operations whose selected toolkits only install files do not inspect,
-parse, snapshot, create, or edit any OpenCode configuration candidate. This lets
-file-only toolkits coexist with consumer-managed configuration symlinks and with
-configuration shapes that are irrelevant to the operation; those paths and their
-targets remain untouched. Configuration is required when any selected desired
-manifest contributes MCP entries or any selected installed record owns MCP
-entries, including removal of the last owned entry and a no-name update that
-selects an installed MCP toolkit.
+Listing and file-only install/uninstall operations do not inspect, parse,
+snapshot, create, or edit OpenCode configuration candidates. For those operations,
+configuration is required when a selected desired manifest contributes MCP
+entries or a selected installed record owns MCP entries. Update verifies all
+installed records, regardless of the requested toolkit names, so it skips
+configuration only when no installed record owns MCP entries and no requested
+update manifest contributes MCP entries. A no-name update requests every
+installed toolkit.
+
+When configuration is not required, its candidate paths and targets remain
+untouched; file-only toolkits can therefore coexist with consumer-managed config
+symlinks and unrelated configuration shapes.
 
 Whenever configuration is required, the strict boundary is unchanged: every
 supported candidate is checked, multiple candidates and malformed JSON/JSONC are
 refused, and symlinks or non-files are rejected rather than followed or replaced.
 A mixed file-and-MCP batch fails before payload or state writes when this check
-fails. Selecting only a file-only toolkit does not make an unselected installed
-MCP toolkit's configuration part of that operation.
+fails. Selecting only a file-only toolkit for install/uninstall does not make an
+unselected installed MCP toolkit's configuration part of that operation. Update
+is different: its all-record verification includes installed MCP ownership even
+when the named update payloads are file-only.
 
 New configuration receives `$schema: "https://opencode.ai/config.json"`. The
 native entry is:
@@ -157,13 +167,26 @@ libvirt VM data. Libvirt data defaults to `$XDG_DATA_HOME/libvirt-toolkit` or
 
 ### Moving a target
 
-MCP commands and ownership state contain absolute paths. The current engine
-cannot repair a project or XDG config root after it has moved, and `update` from
-the new location is **not** a relocation operation. Before moving, uninstall at
-the old path, move the project/config root, reinstall at the new path, and
-restart OpenCode. If already moved, return it to the exact old absolute path,
-uninstall there, then move and reinstall. This does not affect the separate VM
-data directory. Do not hand-edit installer state to simulate relocation.
+Use `update` after moving an installed project or selected global OpenCode
+configuration root. The update path is intentionally narrow: it must establish
+historical ownership from installer state, reject unsafe or unprovable prior
+locations, and verify all currently installed owned files and MCP entries before
+changing anything. It rebases ownership records for every installed toolkit,
+and updates payloads/versions for the requested toolkits; an unnamed update
+updates all installed toolkits. Use `--dry-run` first to inspect planned changes
+without writes.
+
+An unsafe prior state or journal reference is refused; restore the exact
+original location and resolve an interrupted transaction there before retrying.
+Distinct overlapping previous/current payload roots are refused before further
+planning; same-root rename current access is supported. Initial selected-state
+discovery and shared ancestors may access the old tree, but after ownership
+provenance is established the bounded guarantee is no stale-resource reads or
+writes. No general filesystem observer is claimed. This behavior follows the
+bounded candidate policy described in [compatibility evidence](docs/compatibility.md),
+not a guarantee about every OpenCode configuration source. Restart OpenCode
+after a successful applied update. This procedure does not relocate the separate
+VM data directory. Do not hand-edit installer state to simulate relocation.
 
 ### Remote libvirt hosts
 

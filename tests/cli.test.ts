@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -98,6 +98,56 @@ test("CLI project lifecycle reports plans, dry-run, listings, errors, and restar
   assert.match(uninstall.stdout, /restart OpenCode/i);
   const config = JSON.parse(await readFile(path.join(project, "opencode.json"), "utf8"));
   assert.deepEqual(config.mcp, {});
+});
+
+test("CLI moved-root update succeeds and prints the restart notice", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-cli-moved-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const oldProject = path.join(root, "old-project");
+  const currentProject = path.join(root, "current-project");
+  await mkdir(oldProject);
+  const install = await runCli(["install", "project-toolkit", "--project", oldProject]);
+  assert.equal(install.code, 0, install.stderr);
+
+  await rename(oldProject, currentProject);
+  const update = await runCli(["update", "--project", currentProject]);
+  assert.equal(update.code, 0, update.stderr);
+  assert.match(update.stdout, /update project-toolkit@0\.1\.0/i);
+  assert.match(update.stdout, /restart OpenCode/i);
+});
+
+test("CLI refuses unsafe moved-root journal with exact context and manual recovery guidance", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "awesome-opencode-cli-unsafe-journal-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const oldProject = path.join(root, "old-project");
+  const currentProject = path.join(root, "current-project");
+  await mkdir(oldProject);
+  const install = await runCli(["install", "project-toolkit", "--project", oldProject]);
+  assert.equal(install.code, 0, install.stderr);
+
+  await rename(oldProject, currentProject);
+  const journalPath = path.join(currentProject, ".opencode", "awesome-opencode", "journal.json");
+  const offenderPath = path.join(oldProject, ".opencode", "skills", "stale-resource", "SKILL.md");
+  await writeFile(journalPath, JSON.stringify({
+    formatVersion: 1,
+    changes: [{
+      path: offenderPath,
+      before: { exists: false },
+      after: { exists: false },
+      description: "stale resource",
+    }],
+  }));
+
+  const update = await runCli(["update", "--project", currentProject]);
+  assert.equal(update.code, 1);
+  assert.match(update.stderr, new RegExp(`unsafe transaction journal ${journalPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(update.stderr, new RegExp(`resource ${offenderPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(update.stderr, /manually inspect and resolve the journal/i);
+  assert.match(update.stderr, /recover it at its original location before retrying/i);
+  assert.equal(await readFile(journalPath, "utf8"), JSON.stringify({
+    formatVersion: 1,
+    changes: [{ path: offenderPath, before: { exists: false }, after: { exists: false }, description: "stale resource" }],
+  }));
 });
 
 test("CLI global lifecycle honors XDG_CONFIG_HOME", async (t) => {

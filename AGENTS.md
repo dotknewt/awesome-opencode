@@ -18,8 +18,13 @@ that toolkit's strict `toolkit.json`. Toolkit versions are independent from the
 - Never remove VM data during toolkit or CLI uninstall.
 - Mutating installer behavior is Linux-only and requires util-linux `flock`.
   Preserve the parent-owned inherited-FD lock through transaction completion.
-- Do not claim that `update` relocates moved absolute state paths. The supported
-  workflow is uninstall at the old path, move, reinstall, and restart.
+- After a move, use `update` only when prior ownership can be proven and every
+  installed current copy verifies. An update rebases every installed record;
+  named toolkits are updated, while an unnamed update updates all installed
+  toolkits. Fail closed on unsafe journals or distinct overlapping roots. Do not
+  extend this relocation claim to other operations or unmeasured configuration
+  sources; initial state discovery/shared ancestors are outside the
+  stale-resource guarantee.
 
 ## Validation
 
