@@ -30,7 +30,7 @@ interface MatrixRunner {
     wait?: (milliseconds: number) => Promise<void>;
     expectedDirectory?: string;
   }): Promise<{ location: unknown; count: number | null; plugins: unknown[] }>;
-  buildSandboxArgs(options: { node: string; opencode: string; driver: string; fixture: string }): string[];
+  buildSandboxArgs(options: { node: string; opencode: string; driver: string; versionHelper?: string; fixture: string }): string[];
   assertSandboxAvailable(executable?: string): Promise<string>;
   createTempRoot(base: string, prefix: string): Promise<string>;
 }
@@ -241,14 +241,14 @@ test("skill discovery validates identity and installed path and emits bounded me
 
 test("matrix result validator rejects wrong version and loaded candidates", async () => {
   const { validateMatrixResult } = await loadRunner();
-  const expected = { version: "opencode v2.0.30", caseId: "project-json", loadedCandidates: ["project/opencode.json"] };
+  const expected = { version: "opencode v2.1.1", caseId: "project-json", loadedCandidates: ["project/opencode.json"] };
   const fixture: MatrixResult = {
     ...expected,
     loadedCandidates: ["project/opencode.json"],
   };
 
   assert.doesNotThrow(() => validateMatrixResult(fixture, expected));
-  assert.throws(() => validateMatrixResult({ ...fixture, version: "opencode v0.0.0" }, expected), /version/i);
+  assert.throws(() => validateMatrixResult({ ...fixture, version: "opencode v2.1.2" }, expected), /version/i);
   assert.throws(
     () => validateMatrixResult({ ...fixture, loadedCandidates: ["project/opencode.jsonc"] }, expected),
     /candidate|loaded/i,
@@ -272,6 +272,7 @@ test("sandbox argv isolates network and exposes only bounded runtime and fixture
     node: "/usr/bin/node",
     opencode: "/home/test/.opencode/bin/opencode",
     driver: "/repo/scripts/check-opencode-config-matrix.mjs",
+    versionHelper: "/repo/scripts/opencode-version.mjs",
     fixture: "/tmp/opencode/matrix-fixture",
   });
 
@@ -286,6 +287,7 @@ test("sandbox argv isolates network and exposes only bounded runtime and fixture
     "--ro-bind", "/usr/bin/node", "/runtime/node",
     "--ro-bind", "/home/test/.opencode/bin/opencode", "/runtime/opencode",
     "--ro-bind", "/repo/scripts/check-opencode-config-matrix.mjs", "/runtime/driver.mjs",
+    "--ro-bind", "/repo/scripts/opencode-version.mjs", "/runtime/opencode-version.mjs",
     "--bind", "/tmp/opencode/matrix-fixture", "/fixture",
     "--setenv", "PATH", "/runtime", "--setenv", "HOME", "/fixture/home",
     "--setenv", "XDG_CONFIG_HOME", "/fixture/xdg-config", "--setenv", "XDG_DATA_HOME", "/fixture/xdg-data",

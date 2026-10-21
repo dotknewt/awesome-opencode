@@ -2,12 +2,12 @@
 
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, realpath, rm } from "node:fs/promises";
-import { constants } from "node:fs";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import Ajv2020Module from "ajv/dist/2020.js";
+import { readStableV2Version, resolveOpenCodeExecutable } from "./opencode-version.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
 const defaultInstaller = path.join(repositoryRoot, "dist", "installer", "src", "cli.js");
@@ -26,13 +26,13 @@ function command(executable, args, options, timeoutMs = 60_000) {
   });
 }
 
-function parseArguments(argv) {
+export function parseArguments(argv) {
   const mode = argv.shift();
   if (!mode || !["schema", "discovery"].includes(mode)) {
     throw new Error("usage: node scripts/check-opencode.mjs <schema|discovery> [--installer PATH] [--opencode PATH]");
   }
   let installer = defaultInstaller;
-  let opencode = "opencode";
+  let opencode;
   while (argv.length > 0) {
     const option = argv.shift();
     const value = argv.shift();
@@ -92,26 +92,9 @@ async function checkSchema(installer) {
   }
 }
 
-async function resolveExecutable(executable) {
-  const candidates = path.isAbsolute(executable)
-    ? [executable]
-    : (process.env.PATH ?? "").split(path.delimiter).map((directory) => path.join(directory, executable));
-  for (const candidate of candidates) {
-    try {
-      await access(candidate, constants.X_OK);
-      return await realpath(candidate);
-    } catch { /* continue searching PATH */ }
-  }
-  return undefined;
-}
-
 async function checkDiscovery(installer, opencode) {
-  const executable = await resolveExecutable(opencode);
-  if (!executable) {
-    console.log(`SKIP: OpenCode CLI is unavailable: ${opencode}`);
-    process.exitCode = 77;
-    return;
-  }
+  const executable = await resolveOpenCodeExecutable(opencode ?? "opencode");
+  const version = readStableV2Version(executable);
   const fixture = await isolatedInstall(installer);
   try {
     const result = await command(process.execPath, [matrixRunner, "--discovery", "--opencode", executable, "--project", fixture.project], {
@@ -119,17 +102,23 @@ async function checkDiscovery(installer, opencode) {
       env: { PATH: process.env.PATH },
     }, 120_000);
     assert.equal(result.code, 0, result.stderr);
+    assert.ok(result.stdout.includes(version), `matrix did not report measured OpenCode version ${version}`);
+    process.stdout.write(`OpenCode version verified: ${version}\n`);
     process.stdout.write(result.stdout);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
 }
 
-try {
-  const options = parseArguments(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const options = parseArguments(argv);
   if (options.mode === "schema") await checkSchema(options.installer);
   else await checkDiscovery(options.installer, options.opencode);
-} catch (error) {
-  console.error(`FAIL: ${error.stack ?? error.message}`);
-  process.exitCode = 1;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((error) => {
+    console.error(`FAIL: ${error.stack ?? error.message}`);
+    process.exitCode = 1;
+  });
 }
