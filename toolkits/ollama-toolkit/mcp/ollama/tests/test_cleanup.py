@@ -56,6 +56,14 @@ class CleanupTests(unittest.TestCase):
         for item in result[1:]:
             self.assertIsNone(item['candidate'])
 
+    def test_size_is_not_a_family_version(self):
+        source = 'mistral-7b-instruct'
+        result = Cleanup(Fake(inventory((source, ID)))).suggest_names()
+        self.assertEqual(result['suggestions'], [{
+            'source': source, 'family': None, 'size': '7b',
+            'descriptors': ['mistral', 'instruct'], 'candidate': None,
+        }])
+
     def test_rejections(self):
         for source, destination, confirmed, rows, code in [
             ('old', 'new', False, [], 'confirmation_required'),
@@ -99,6 +107,34 @@ class CleanupTests(unittest.TestCase):
                 with self.assertRaises(CleanupError) as caught:
                     Cleanup(fake).rename_model('old', 'new', True)
                 error = caught.exception
+                self.assertEqual(error.code, 'rename_partial_failure')
+                self.assertEqual(error.message, 'Rename did not complete reliably; inspect inventory. No rollback was attempted.')
+                self.assertTrue(error.details['copy_attempted'])
+                self.assertEqual(error.details['source'], 'old')
+                self.assertEqual(error.details['destination'], 'new')
+                self.assertEqual(error.details['observed_id'], ID)
+                self.assertEqual(error.details['identity_evidence'], 'ollama_list_id_not_full_digest_proof')
+                failure = responses[-1]
+                if isinstance(failure, Exception):
+                    cause = {
+                        'code': 'cli_timeout' if isinstance(failure, subprocess.TimeoutExpired) else 'cli_failed',
+                        'message': 'Ollama command failed.',
+                        'details': {'reason': str(failure)},
+                    }
+                elif failure == 'unreadable':
+                    cause = {'code': 'invalid_inventory', 'message': 'Unexpected Ollama inventory header.', 'details': {}}
+                else:
+                    cause = {'code': 'verification_failed', 'message': 'Source or destination is missing or its listed ID changed.', 'details': {}}
+                self.assertEqual(error.details['cause'], cause)
+                observation = responses[1] if len(responses) > 1 else None
+                if isinstance(observation, str) and observation.startswith('NAME ID SIZE MODIFIED\n'):
+                    expected_observation = []
+                    for row in observation.splitlines()[1:]:
+                        name, identity, *_ = row.split()
+                        expected_observation.append({'name': name, 'canonical_name': name + ':latest', 'observed_id': identity})
+                    self.assertEqual(error.details['post_copy_observation'], expected_observation)
+                else:
+                    self.assertNotIn('post_copy_observation', error.details)
                 self.assertEqual(error.details['stage'], stage)
                 self.assertEqual(error.details['state'], 'unknown')
                 self.assertFalse(error.details['rollback_attempted'])

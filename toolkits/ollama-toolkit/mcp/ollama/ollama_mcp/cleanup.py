@@ -8,6 +8,7 @@ can race every inventory check; no rollback or atomicity is promised.
 
 import re
 import subprocess
+from collections.abc import Callable
 
 
 class CleanupError(Exception):
@@ -18,7 +19,7 @@ class CleanupError(Exception):
         self.details = details if details is not None else {}
 
 
-def run_ollama(arguments):
+def run_ollama(arguments: list[str]) -> str:
     """Run a bounded CLI invocation without shell evaluation."""
     try:
         return subprocess.run(
@@ -42,7 +43,7 @@ def _valid_name(name):
 def extract_fields(name):
     text = re.sub(r'[/：:]((?:iq|q)\d[\w.-]*|f16|fp16|bf16|f32)$', '', name, flags=re.I)
     text = text.rsplit('/', 1)[-1].lower()
-    families = re.findall(r'(?<![a-z0-9])(?:qwen|gemma|llama|mistral|phi)[-_]?\d+(?:\.\d+)*', text)
+    families = re.findall(r'(?<![a-z0-9])(?:qwen|gemma|llama|mistral|phi)[-_]?\d+(?:\.\d+)*(?![a-z0-9.])', text)
     sizes = re.findall(r'(?<![a-z0-9])\d+(?:\.\d+)?b(?![a-z0-9])', text)
     family = re.sub(r'[-_]', '', families[0]) if len(set(families)) == 1 else None
     size = sizes[0] if len(set(sizes)) == 1 else None
@@ -58,7 +59,7 @@ IDENTITY_EVIDENCE = 'ollama_list_id_not_full_digest_proof'
 
 
 class Cleanup:
-    def __init__(self, runner=run_ollama):
+    def __init__(self, runner: Callable[[list[str]], str] = run_ollama) -> None:
         self.runner = runner
 
     def _run(self, arguments):
@@ -93,10 +94,10 @@ class Cleanup:
             models.append({'name': fields[0], 'canonical_name': canonical, 'observed_id': fields[1].lower()})
         return models
 
-    def list_models(self):
+    def list_models(self) -> dict:
         return {'models': self._inventory(), 'identity_evidence': IDENTITY_EVIDENCE}
 
-    def suggest_names(self):
+    def suggest_names(self) -> dict:
         suggestions = []
         for model in self._inventory():
             source = model['name']
@@ -106,7 +107,7 @@ class Cleanup:
                                 'descriptors': descriptors, 'candidate': candidate})
         return {'suggestions': suggestions}
 
-    def rename_model(self, source, destination, confirmed=False):
+    def rename_model(self, source: str, destination: str, confirmed: bool = False) -> dict:
         if confirmed is not True:
             raise CleanupError('confirmation_required', 'Explicit approval of this exact source and destination is required.')
         component = r'[a-zA-Z0-9][a-zA-Z0-9._-]*'
