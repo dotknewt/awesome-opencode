@@ -7,21 +7,16 @@ import { access, lstat, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from
 import { constants } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { validateOpenCodeVersion, resolveOpenCodeExecutable } from "./opencode-version.mjs";
+export { validateOpenCodeVersion } from "./opencode-version.mjs";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-export function validateOpenCodeVersion(output) {
-  const version = typeof output === "string" ? output.trim() : "";
-  const match = /^opencode v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
-  assert.ok(match, `unsupported OpenCode version ${version}: require stable v2.2.1 or greater`);
-  const [major, minor, patch] = match.slice(1, 4).map(BigInt);
-  assert.ok(major > 2n || (major === 2n && (minor > 2n || (minor === 2n && patch >= 1n))),
-    `unsupported OpenCode version ${version}: require stable v2.2.1 or greater`);
-  return version;
-}
 const FIXTURE_ROOT = "/fixture";
 const RUNTIME_NODE = "/runtime/node";
 const RUNTIME_OPENCODE = "/runtime/opencode";
 const RUNTIME_DRIVER = "/runtime/driver.mjs";
+const RUNTIME_VERSION_HELPER = "/runtime/opencode-version.mjs";
+const VERSION_HELPER = fileURLToPath(new URL("./opencode-version.mjs", import.meta.url));
 const SKILLS = ["dotknewt-libvirt-vms", "dotknewt-guest-access", "dotknewt-handling-todos", "dotknewt-ollama-name-cleanup"];
 
 export const matrixCases = [
@@ -199,8 +194,8 @@ function appendBind(args, flag, source, destination) {
   args.push(flag, source, destination);
 }
 
-export function buildSandboxArgs({ node, opencode, driver, fixture }) {
-  for (const [name, value] of Object.entries({ node, opencode, driver, fixture })) {
+export function buildSandboxArgs({ node, opencode, driver, versionHelper = VERSION_HELPER, fixture }) {
+  for (const [name, value] of Object.entries({ node, opencode, driver, versionHelper, fixture })) {
     assert.ok(path.isAbsolute(value), `${name} must be an absolute path`);
   }
   const args = [
@@ -228,6 +223,7 @@ export function buildSandboxArgs({ node, opencode, driver, fixture }) {
   appendBind(args, "--ro-bind", node, RUNTIME_NODE);
   appendBind(args, "--ro-bind", opencode, RUNTIME_OPENCODE);
   appendBind(args, "--ro-bind", driver, RUNTIME_DRIVER);
+  appendBind(args, "--ro-bind", versionHelper, RUNTIME_VERSION_HELPER);
   appendBind(args, "--bind", fixture, FIXTURE_ROOT);
   args.push(
     "--setenv", "PATH", "/runtime",
@@ -484,6 +480,7 @@ async function runMatrix(opencode) {
       node: await realpath(process.execPath),
       opencode: await realpath(opencode),
       driver: await realpath(fileURLToPath(import.meta.url)),
+      versionHelper: await realpath(VERSION_HELPER),
       fixture: root,
     });
     args[args.length - 1] = "--inside";
@@ -548,6 +545,7 @@ async function runDiscovery(opencode, project) {
     node: await realpath(process.execPath),
     opencode: await realpath(opencode),
     driver: await realpath(fileURLToPath(import.meta.url)),
+    versionHelper: await realpath(VERSION_HELPER),
     fixture: root,
   });
   args.push(JSON.stringify(config));
@@ -573,13 +571,16 @@ async function main() {
   const discovery = args.includes("--discovery");
   const opencodeIndex = args.indexOf("--opencode");
   const projectIndex = args.indexOf("--project");
-  if (opencodeIndex < 0 || !args[opencodeIndex + 1]) throw new Error("--opencode requires an executable path");
-  if (!path.isAbsolute(args[opencodeIndex + 1])) throw new Error("--opencode requires an absolute executable path");
-  const opencode = args[opencodeIndex + 1];
+  if (opencodeIndex >= 0 && !args[opencodeIndex + 1]) throw new Error("--opencode requires an executable path");
+  const selected = opencodeIndex >= 0 ? args[opencodeIndex + 1] : "opencode";
+  const opencode = await resolveOpenCodeExecutable(selected);
   if (discovery) {
     if (projectIndex < 0 || !args[projectIndex + 1]) throw new Error("--discovery requires --project PATH");
     await runDiscovery(opencode, path.resolve(args[projectIndex + 1]));
   } else {
+    if (args.some((arg, index) => arg.startsWith("--") && !["--opencode"].includes(arg) && index !== opencodeIndex)) {
+      throw new Error("usage: node scripts/check-opencode-config-matrix.mjs [--opencode PATH] [--discovery --project PATH]");
+    }
     await runMatrix(opencode);
   }
 }

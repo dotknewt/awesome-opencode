@@ -9,15 +9,17 @@ measurement is an inferred exact-version support promise.
 | Python server | Python >=3.10; acceptance uses 3.13 and `mcp==2.2.0` | Full fake-adapter unittest suite and isolated PEP 723 `--help` launch |
 | OpenCode config schema | Public `https://opencode.ai/config.json` | Generated `dotknewt-libvirt` entry validated separately against `$defs.McpLocalConfig` |
 | OpenCode discovery (historical; measured 2026-09-17) | OpenCode 1.18.31 measured | Historical isolated HOME/XDG project with `--pure`, plugins/providers/extra skills disabled, and MCP disabled; two native skills and config path observed. This is not v2 evidence. |
-| OpenCode config candidate loading/discovery | OpenCode v2.0.30 measured 2026-10-17 | Exact executable, isolated `/api/config`, plugin readiness, native skill metadata, and disabled MCP entry observed below. No broader support change is implied. |
+| OpenCode config candidate loading/discovery (historical) | OpenCode v2.0.30 measured 2026-10-17 | Exact executable, isolated `/api/config`, plugin readiness, native skill metadata, and disabled MCP entry observed below. No broader support change is implied. |
+| OpenCode config candidate loading/discovery (current validation policy) | Stable OpenCode >=2.2.1 selected from `PATH` by default; explicit `--opencode PATH` supported | Shared numeric admission allows later majors and rejects older, prerelease, or malformed versions. Each outcome must exactly match the measured run version. Each successful run proves only its named assertions for that executable, not broad compatibility. No automatic download. |
 | qemu images | Optional local `qemu-img` | Temporary qcow2 create/convert/backing-chain tests only |
 | libvirt | `virsh`, `qemu-img`, per-user `qemu:///session` required for real use | No CI/live acceptance; lifecycle tests use fake command adapters |
 
 The native discovery check proves resolution only—not an MCP handshake,
 dependency download, provider request, MCP server launch, libvirt connectivity,
-SSH transport, or VM lifecycle. The v2.0.30 check observed built-in skill-plugin
-readiness followed by all three installed skills and a disabled MCP config in
-the isolated network. No provider requests or credentials were used. The schema
+SSH transport, or VM lifecycle. Historical v2.0.30 evidence and the later
+stable-V2 measurements below observed only the named config matrix, builtin
+skill-plugin readiness, installed skills, and disabled MCP config in isolated
+network namespaces. No provider requests or credentials were used. The schema
 check is separate because discovery alone does not validate the authoritative
 schema.
 
@@ -31,11 +33,13 @@ must install and verify the prerequisites listed in `CONTRIBUTING.md`; no CI
 configuration or automatic prerequisite installation is claimed here.
 
 OpenCode is a moving target. The public schema check is separate from runtime
-source evidence. The v2.0.30 matrix below measured only the listed fixture
-documents. External overrides and effective merged runtime completeness remain
-unverified; no production observer, candidate expansion, or support change is
-implied. The historical v1 `--pure` discovery result remains limited to 1.18.31
-and is not used as v2 evidence.
+source evidence. The stable >=2.2.1 gate is a selection policy, not a
+compatibility guarantee for every eligible release. Each matrix/discovery run records
+the actual executable version and supports only the assertions measured on that
+version. External overrides and effective merged runtime completeness remain
+unverified; no production observer, candidate expansion, or broad support claim
+is implied. The historical v1 `--pure` discovery result remains limited to
+1.18.31 and is not used as v2 evidence.
 
 ## Current OpenCode policy and v2.2.1 evidence (2026-10-29)
 
@@ -70,12 +74,10 @@ libvirt and Ollama MCP entries normalized to `disabled: true` with their exact
 sandbox-mapped entrypoints. Commands were
 `node scripts/check-opencode-config-matrix.mjs --opencode "$(command -v opencode)"`
 and `node scripts/check-opencode.mjs discovery --opencode "$(command -v opencode)"`.
-No sandbox mounts were added; no MCP server execution, live service, provider
+No sandbox mounts were added in that pre-merge run; no MCP server execution, live service, provider
 request, or consumer configuration was involved. These results are bounded to
 this release and disposable fixture, not external overrides or merged-runtime
 completeness. Historical measurements and release links below remain unchanged.
-
-## OpenCode v2.0.30 configuration evidence
 
 ### Ollama integration (2026-10-29)
 
@@ -93,9 +95,20 @@ Discovery expects four installed skills and two disabled MCP entries. The initia
 attempt failed closed under the former exact-v2.0.30 policy because the available
 executable was `opencode v2.2.1`. The new minimum-version policy and successful
 v2.2.1 rerun are recorded separately above, not as an extension of historical
-v2.0.30 evidence. Sandbox mounts and network isolation are unchanged; no
+v2.0.30 evidence. That run kept sandbox mounts and network isolation unchanged; no
 Python/uv/Ollama runtime was mounted. Public schema validation passed during
 controller acceptance; full-suite acceptance remains controller-owned.
+
+The remote integration adds only a read-only mount of the self-contained shared
+version helper beside the sandbox driver; no repository directory, Python/uv,
+Ollama runtime, or consumer configuration is exposed.
+The integrated runner was rechecked on `opencode v2.2.1`: PATH-selected 18-case
+matrix and PATH/explicit-path discovery passed, with four installed skills and
+both MCP entries disabled. The dated Hermes planning documents retain their
+historical V2-only policy wording; current repository acceptance follows the
+minimum-version policy here and in `CONTRIBUTING.md`, not that superseded wording.
+
+## Historical OpenCode v2.0.30 configuration evidence
 
 | Version | Command | Documented fact | Source-inspected fact | Measured result | Support boundary |
 |---|---|---|---|---|---|
@@ -174,3 +187,19 @@ may access prior paths; the bounded stale-resource guarantee starts after
 provenance is established. Same-root rename permits current-root access. No
 stale-resource access after provenance is claimed, but no general observer or
 relocation support for install, uninstall, list, or other operations is implied.
+
+## Historical stable-V2 policy and measured 2.1.1 result
+
+`scripts/check-opencode-config-matrix.mjs` and
+`scripts/check-opencode.mjs discovery` select `opencode` from `PATH` unless an
+explicit `--opencode PATH` is supplied. The former V2-only admission policy is
+superseded by the stable >=2.2.1 policy above; v2.1.1 no longer qualifies for
+current acceptance. Missing executables fail closed; no automatic download or
+unisolated fallback is performed.
+
+On 2026-10-21, the focused acceptance run selected `opencode v2.1.1` from `PATH`
+and passed the existing 18-case configuration matrix plus isolated discovery
+assertions. This is evidence for those specific assertions on v2.1.1 only; it
+does not establish general V2 compatibility, effective config merging, or
+external override behavior. The pinned v2.0.30 source citations and measurements
+above remain historical evidence and are not removed or reinterpreted.

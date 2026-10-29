@@ -31,29 +31,37 @@ uv run --isolated --python 3.13 --with 'mcp==2.2.0' \
 
 bun run test:opencode:schema
 
-# Actual OpenCode evidence gate: Linux x86_64, bubblewrap, stable v2.2.1 or greater.
+# Actual OpenCode evidence gate: Linux x86_64, bubblewrap, stable >=2.2.1 binary.
 test "$(uname -m)" = "x86_64"
 command -v bwrap
-OPENCODE="$(command -v opencode)"
-test -x "$OPENCODE"
-# Both runners enforce minimum-version admission inside the sandbox.
-node scripts/check-opencode-config-matrix.mjs --opencode "$OPENCODE"
-node scripts/check-opencode.mjs discovery --opencode "$OPENCODE"
+node scripts/check-opencode-config-matrix.mjs
+node scripts/check-opencode.mjs discovery
+```
+
+Optional: select a specific executable instead of the installed `opencode` on
+`PATH` (replace the example with a real executable path):
+
+```sh
+node scripts/check-opencode-config-matrix.mjs --opencode /path/to/opencode
+node scripts/check-opencode.mjs discovery --opencode /path/to/opencode
 ```
 
 The OpenCode schema check requires HTTPS access to
-`https://opencode.ai/config.json`. The matrix requires Linux x86_64, `bwrap`, the
-stable OpenCode v2.2.1 or greater executable, Node.js 22+, `/usr/lib`, and
-`/lib64/ld-linux-x86-64.so.2` for the reviewed sandbox runtime mounts. It fails
-on missing prerequisites; it does not skip or fall back to an unisolated run.
-Admission uses numeric stable-semver ordering (valid build metadata is allowed;
-prereleases are not). Evidence records the actual executable version, and every
-outcome must match that exact run version. Eligibility does not promise that a
-later release passes the unchanged behavioral assertions.
-The discovery test also requires the actual executable. Some repository test
-wrappers may report optional prerequisite skips; run the explicit acceptance
-commands above and treat any skip/nonzero result as incomplete evidence. No CI
-configuration or automatic prerequisite installation is asserted here.
+`https://opencode.ai/config.json`. The matrix/discovery checks require Linux
+x86_64, `bwrap`, Node.js 22+, `/usr/lib`, and
+`/lib64/ld-linux-x86-64.so.2` for the reviewed sandbox runtime mounts. They use
+the installed `opencode` on `PATH` by default, or an explicit `--opencode PATH`,
+and require stable OpenCode v2.2.1 or greater (later majors allowed), rejecting
+missing, malformed, prerelease, or unrecognized version output. Shared admission
+uses numeric semver ordering with BigInt; valid build metadata is allowed.
+Every outcome must match the actual run version exactly. Eligibility is not a
+promise that later releases pass the behavioral assertions.
+They report the version actually measured; no binary is downloaded or
+installed automatically. Missing binaries/prerequisites fail the explicit
+acceptance command; no unisolated fallback is allowed. The schema check may
+still visibly skip when its public schema endpoint is unavailable; treat that
+skip/nonzero result as incomplete acceptance. No CI configuration or automatic
+prerequisite installation is asserted here.
 
 Package acceptance launches installed Ollama MCP entrypoints in both scopes
 with a fake `ollama` executable and disposable HOME/XDG/inventory. It requires
