@@ -9,12 +9,20 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("..", import.meta.url));
-const EXPECTED_VERSION = "opencode v2.0.30";
+export function validateOpenCodeVersion(output) {
+  const version = typeof output === "string" ? output.trim() : "";
+  const match = /^opencode v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(version);
+  assert.ok(match, `unsupported OpenCode version ${version}: require stable v2.2.1 or greater`);
+  const [major, minor, patch] = match.slice(1, 4).map(BigInt);
+  assert.ok(major > 2n || (major === 2n && (minor > 2n || (minor === 2n && patch >= 1n))),
+    `unsupported OpenCode version ${version}: require stable v2.2.1 or greater`);
+  return version;
+}
 const FIXTURE_ROOT = "/fixture";
 const RUNTIME_NODE = "/runtime/node";
 const RUNTIME_OPENCODE = "/runtime/opencode";
 const RUNTIME_DRIVER = "/runtime/driver.mjs";
-const SKILLS = ["dotknewt-libvirt-vms", "dotknewt-guest-access", "dotknewt-handling-todos"];
+const SKILLS = ["dotknewt-libvirt-vms", "dotknewt-guest-access", "dotknewt-handling-todos", "dotknewt-ollama-name-cleanup"];
 
 export const matrixCases = [
   ["project-json", ["project/opencode.json"]],
@@ -313,8 +321,7 @@ async function inside() {
   const config = JSON.parse(process.argv[3]);
   const version = await command(RUNTIME_OPENCODE, ["--version"], { cwd: "/fixture/project" }, 15_000);
   assert.equal(version.code, 0, version.stderr);
-  const actualVersion = version.stdout.trim();
-  assert.equal(actualVersion, EXPECTED_VERSION, `unsupported OpenCode version ${actualVersion}`);
+  const actualVersion = validateOpenCodeVersion(version.stdout);
   const outcomes = [];
   for (const item of config.cases) {
     if (!config.discovery) await prepareMatrixCase("/fixture", item);
@@ -393,6 +400,9 @@ async function inside() {
         const mcp = projectDocument.info?.mcp?.servers?.["dotknewt-libvirt"];
         assertNormalizedMcpDisabled(mcp);
         assert.equal(mcp?.command?.at(-1), config.expectedEntrypoint);
+        const ollama = projectDocument.info?.mcp?.servers?.["dotknewt-ollama"];
+        assertNormalizedMcpDisabled(ollama);
+        assert.equal(ollama?.command?.at(-1), config.expectedOllamaEntrypoint);
         const configDirectories = documents
           .filter((entry) => entry.type === "directory")
           .map((entry) => entry.path);
@@ -426,6 +436,7 @@ async function inside() {
         outcomes[outcomes.length - 1].discoveryEvidence = {
           disabled: mcp.disabled,
           command: mcp.command,
+          ollama: { disabled: ollama.disabled, command: ollama.command },
           pluginInventory,
           skills: discoveryDiagnostic,
         };
@@ -463,7 +474,6 @@ async function runMatrix(opencode) {
     }
     const password = `matrix-${randomBytes(24).toString("hex")}`;
     const fixture = {
-      version: EXPECTED_VERSION,
       password,
       cases: matrixCases,
       discovery: false,
@@ -481,10 +491,10 @@ async function runMatrix(opencode) {
     const result = await command(await assertSandboxAvailable(), args, { cwd: repositoryRoot }, 240_000);
     assert.equal(result.code, 0, result.stderr);
     const output = JSON.parse(result.stdout.trim().split("\n").at(-1));
-    assert.equal(output.version, EXPECTED_VERSION);
+    validateOpenCodeVersion(output.version);
     assert.equal(output.outcomes.length, matrixCases.length);
     for (const [index, outcome] of output.outcomes.entries()) {
-      validateMatrixResult(outcome, { version: EXPECTED_VERSION, caseId: matrixCases[index].id });
+      validateMatrixResult(outcome, { version: output.version, caseId: matrixCases[index].id });
       assert.ok(outcome.loadedCandidates.length > 0, `no candidate config loaded for ${outcome.caseId}`);
       for (const candidate of outcome.loadedCandidates) {
         assert.ok(matrixCases[index].inputCandidates.includes(candidate), `unexpected loaded candidate for ${outcome.caseId}: ${candidate}`);
@@ -521,12 +531,19 @@ async function runDiscovery(opencode, project) {
   assert.ok(relativeEntrypoint.startsWith(`.opencode${path.sep}`), "MCP entrypoint must be inside installed project payload");
   const expectedEntrypoint = path.posix.join("/fixture/project", relativeEntrypoint.split(path.sep).join("/"));
   mcp.command[mcp.command.length - 1] = expectedEntrypoint;
+  const ollama = source.mcp?.["dotknewt-ollama"];
+  assert.ok(ollama && Array.isArray(ollama.command), "installed fixture lacks dotknewt-ollama MCP entry");
+  const ollamaRelative = path.relative(project, ollama.command.at(-1));
+  assert.ok(ollamaRelative.startsWith(`.opencode${path.sep}`) && !ollamaRelative.split(path.sep).includes(".."));
+  const expectedOllamaEntrypoint = path.posix.join("/fixture/project", ollamaRelative.split(path.sep).join("/"));
+  ollama.enabled = false;
+  ollama.command[ollama.command.length - 1] = expectedOllamaEntrypoint;
   await writeFile(configFile, `${JSON.stringify(source, null, 2)}\n`);
   for (const directory of ["home", "xdg-config", "xdg-data", "xdg-cache", "xdg-state"]) {
     await mkdir(path.join(root, directory), { recursive: true });
   }
   const password = `discovery-${randomBytes(24).toString("hex")}`;
-  const config = { password, discovery: true, expectedEntrypoint, cases: [{ id: "discovery", inputCandidates: [] }] };
+  const config = { password, discovery: true, expectedEntrypoint, expectedOllamaEntrypoint, cases: [{ id: "discovery", inputCandidates: [] }] };
   const args = buildSandboxArgs({
     node: await realpath(process.execPath),
     opencode: await realpath(opencode),
@@ -537,13 +554,17 @@ async function runDiscovery(opencode, project) {
   const result = await command(await assertSandboxAvailable(), args, { cwd: repositoryRoot }, 90_000);
   assert.equal(result.code, 0, result.stderr);
   const evidence = JSON.parse(result.stdout.trim().split("\n").at(-1));
-  assert.equal(evidence.version, EXPECTED_VERSION);
+  validateOpenCodeVersion(evidence.version);
+  assert.equal(evidence.outcomes.length, 1);
+  validateMatrixResult(evidence.outcomes[0], { version: evidence.version, caseId: "discovery" });
   assert.equal(evidence.outcomes[0]?.discoveryEvidence?.disabled, true);
   assert.equal(evidence.outcomes[0]?.discoveryEvidence?.command?.at(-1), expectedEntrypoint);
+  assert.equal(evidence.outcomes[0]?.discoveryEvidence?.ollama?.disabled, true);
+  assert.equal(evidence.outcomes[0]?.discoveryEvidence?.ollama?.command?.at(-1), expectedOllamaEntrypoint);
   assert.ok(evidence.outcomes[0]?.discoveryEvidence?.pluginInventory?.plugins?.some((plugin) =>
     plugin.id === "opencode.config.skill" && plugin.sourceType === "builtin" && plugin.status === "active"));
   console.log(JSON.stringify(evidence, null, 2));
-  console.log(`PASS: ${EXPECTED_VERSION} discovered three native skills with MCP disabled in isolated config API`);
+  console.log(`PASS: ${evidence.version} discovered four native skills with both MCP servers disabled in isolated config API`);
 }
 
 async function main() {

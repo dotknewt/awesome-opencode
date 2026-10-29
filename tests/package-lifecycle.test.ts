@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
+import { checkInstalledOllama } from "./fixtures/installed-ollama.js";
 
 interface CommandResult {
   code: number | null;
@@ -72,7 +73,8 @@ test("global Git install builds a standalone CLI from clean source", { timeout: 
     await mkdir(path.dirname(destination), { recursive: true });
     await cp(path.join(repositoryRoot, file), destination);
   }
-  await copyFixtureFiles(repositoryRoot, source, ["bin/awesome-opencode.js", "bun.lock"]);
+  // Include the build-time helper even before it is added to the Git index.
+  await copyFixtureFiles(repositoryRoot, source, ["bin/awesome-opencode.js", "bun.lock", "tests/fixtures/installed-ollama.ts"]);
   await assert.rejects(access(path.join(source, "dist")), { code: "ENOENT" });
   await assert.rejects(access(path.join(source, "node_modules")), { code: "ENOENT" });
 
@@ -135,7 +137,8 @@ test("global Git install via Bun builds a standalone CLI from clean source", { t
     await mkdir(path.dirname(destination), { recursive: true });
     await cp(path.join(repositoryRoot, file), destination);
   }
-  await copyFixtureFiles(repositoryRoot, source, ["bin/awesome-opencode.js", "bun.lock"]);
+  // Include the build-time helper even before it is added to the Git index.
+  await copyFixtureFiles(repositoryRoot, source, ["bin/awesome-opencode.js", "bun.lock", "tests/fixtures/installed-ollama.ts"]);
   await assert.rejects(access(path.join(source, "dist")), { code: "ENOENT" });
   await assert.rejects(access(path.join(source, "node_modules")), { code: "ENOENT" });
 
@@ -208,6 +211,9 @@ test("real npm tarball remains functional after disposable package source remova
   assert.ok(packedPaths.includes("dist/installer/src/cli.js"));
   assert.ok(packedPaths.includes("bin/awesome-opencode.js"));
   assert.ok(packedPaths.includes("LICENSE"));
+  for (const file of ["toolkit.json", "skills/dotknewt-ollama-name-cleanup/SKILL.md", "mcp/ollama/server.py", "mcp/ollama/ollama_mcp/cleanup.py", "mcp/ollama/ollama_mcp/server.py"]) {
+    assert.ok(packedPaths.includes(`toolkits/ollama-toolkit/${file}`), file);
+  }
   assert.ok(packedPaths.includes("docs/architecture.md"));
   assert.ok(packedPaths.includes("toolkits/libvirt-toolkit/mcp/libvirt/libvirt_mcp/server.py"));
   assert.ok(
@@ -254,6 +260,8 @@ test("real npm tarball remains functional after disposable package source remova
   assert.equal(projectInstall.code, 0, projectInstall.stderr);
   const projectToolkitInstall = await run(["install", "project-toolkit", "--project", project]);
   assert.equal(projectToolkitInstall.code, 0, projectToolkitInstall.stderr);
+  const ollamaInstall = await run(["install", "ollama-toolkit", "--project", project]);
+  assert.equal(ollamaInstall.code, 0, ollamaInstall.stderr);
   const projectUpdate = await run(["update", "--project", project]);
   assert.equal(projectUpdate.code, 0, projectUpdate.stderr);
 
@@ -266,10 +274,18 @@ test("real npm tarball remains functional after disposable package source remova
   assert.equal(globalInstall.code, 0, globalInstall.stderr);
   const globalProjectToolkitInstall = await run(["install", "project-toolkit", "--global"], globalEnv);
   assert.equal(globalProjectToolkitInstall.code, 0, globalProjectToolkitInstall.stderr);
+  const globalOllamaInstall = await run(["install", "ollama-toolkit", "--global"], globalEnv);
+  assert.equal(globalOllamaInstall.code, 0, globalOllamaInstall.stderr);
+  // Remove the installed package's catalog too: runtime must use only target-owned files.
+  await rename(path.join(packagedRoot, "toolkits"), path.join(packagedRoot, "toolkits.unavailable"));
+  for (const [configRoot, payloadRoot] of [[project, path.join(project, ".opencode")], [path.join(globalRoot, "opencode"), path.join(globalRoot, "opencode")]]) {
+    await checkInstalledOllama(configRoot!, payloadRoot!, root);
+  }
+  await rename(path.join(packagedRoot, "toolkits.unavailable"), path.join(packagedRoot, "toolkits"));
   const globalUpdate = await run(["update", "--global"], globalEnv);
   assert.equal(globalUpdate.code, 0, globalUpdate.stderr);
   const globalUninstall = await run(
-    ["uninstall", "libvirt-toolkit", "project-toolkit", "--global"],
+    ["uninstall", "libvirt-toolkit", "project-toolkit", "ollama-toolkit", "--global"],
     globalEnv,
   );
   assert.equal(globalUninstall.code, 0, globalUninstall.stderr);
@@ -386,7 +402,7 @@ test("real npm tarball remains functional after disposable package source remova
   assert.match(list.stdout, /libvirt-toolkit\s+-\s+0\.2\.1/);
   assert.match(list.stdout, /project-toolkit\s+-\s+0\.1\.0/);
   const uninstall = await run(
-    ["uninstall", "libvirt-toolkit", "project-toolkit", "--project", project],
+    ["uninstall", "libvirt-toolkit", "project-toolkit", "ollama-toolkit", "--project", project],
   );
   assert.equal(uninstall.code, 0, uninstall.stderr);
   assert.match(uninstall.stdout, /uninstall libvirt-toolkit@0\.2\.1/);

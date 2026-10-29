@@ -9,6 +9,9 @@ Documented npm commands are retained only for interoperability checks.
 
 ## Available toolkits
 
+- `ollama-toolkit` installs `dotknewt-ollama-name-cleanup` and a local MCP server
+  for model inventory, heuristic naming suggestions, and explicitly approved
+  single-model copy/verify/remove renames. No pulls or batch mutation.
 - `project-toolkit` installs the on-demand `dotknewt-handling-todos` skill for
   TODO and backlog workflows. It does not inject always-loaded rules or change a
   consumer's `AGENTS.md`.
@@ -30,6 +33,8 @@ Documented npm commands are retained only for interoperability checks.
   workflow, and SSH/rsync/SCP are access/transfer clients.
 - Network access on first MCP launch, or a populated `uv` cache, so `uv` can
   acquire the pinned `mcp==2.2.0` dependency.
+- For Ollama tools: Python 3.10+, `uv`, and the `ollama` CLI with access to your
+  intended local Ollama service. Installation itself does not contact Ollama.
 
 Installing content does not start the MCP server, contact libvirt, or operate a
 VM. Restart OpenCode after an applied install, update, or uninstall.
@@ -81,7 +86,13 @@ awesome-opencode install libvirt-toolkit --project /absolute/project
 awesome-opencode update --project /absolute/project
 awesome-opencode uninstall libvirt-toolkit --project /absolute/project
 awesome-opencode install libvirt-toolkit --global
+awesome-opencode install ollama-toolkit --project /absolute/project
+awesome-opencode install ollama-toolkit --global
 ```
+
+Approve the exact source → destination before an Ollama rename. The confirmation
+argument acknowledges approval; it does not prove human authorization. Renames
+are not atomic against concurrent writers; partial failures do not promise rollback.
 
 Install the project workflow skill with either target selector:
 

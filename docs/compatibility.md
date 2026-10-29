@@ -37,7 +37,65 @@ unverified; no production observer, candidate expansion, or support change is
 implied. The historical v1 `--pure` discovery result remains limited to 1.18.31
 and is not used as v2 evidence.
 
+## Current OpenCode policy and v2.2.1 evidence (2026-10-29)
+
+Actual acceptance requires **stable OpenCode v2.2.1 or greater**, using numeric
+semver ordering, not an exact-version pin. Prereleases, malformed output, and
+leading-zero version components are rejected; valid build metadata is allowed.
+The shared sandbox runner records the actual version and requires every outcome
+to match it exactly. Eligibility is not a claim that every later release passes:
+the existing behavioral assertions and isolation remain mandatory.
+
+Source-inspected v2.2.1 release references (separate from measurements):
+[config protocol](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/protocol/src/groups/config.ts),
+[plugin protocol](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/protocol/src/groups/plugin.ts),
+and [skill protocol](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/protocol/src/groups/skill.ts)
+retain the config-entry and location-scoped plugin/skill response shapes used by
+the harness; the plugin and skill routes are experimental.
+[Config schema](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/schema/src/config.ts),
+[MCP schema](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/schema/src/mcp.ts),
+[plugin schema](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/schema/src/plugin.ts),
+[location parsing](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/server/src/location.ts),
+and [builtin skill registration](https://github.com/anomalyco/opencode/blob/3ebcf9a32c7b28f658cfee80775448929361727a/packages/core/src/config/plugin/skill.ts)
+support the unchanged entry, disabled-state, location, and readiness assertions.
+Source shapes alone do not prove legacy MCP normalization or runtime readiness;
+those remain experimental acceptance prerequisites for each actual executable.
+
+Measured here with `/home/dotme/.opencode/bin/opencode`, reporting
+`opencode v2.2.1`: the unchanged isolated 18-case matrix passed with the same
+ordered candidate paths and markers listed in the historical table below.
+Isolated discovery passed: builtin `opencode.config.skill` reached active state,
+all four installed skill identities and exact paths were observed, and both
+libvirt and Ollama MCP entries normalized to `disabled: true` with their exact
+sandbox-mapped entrypoints. Commands were
+`node scripts/check-opencode-config-matrix.mjs --opencode "$(command -v opencode)"`
+and `node scripts/check-opencode.mjs discovery --opencode "$(command -v opencode)"`.
+No sandbox mounts were added; no MCP server execution, live service, provider
+request, or consumer configuration was involved. These results are bounded to
+this release and disposable fixture, not external overrides or merged-runtime
+completeness. Historical measurements and release links below remain unchanged.
+
 ## OpenCode v2.0.30 configuration evidence
+
+### Ollama integration (2026-10-29)
+
+Focused npm tarball acceptance passed with both project/global installations:
+the unpacked package source was deleted and the installed CLI catalog made
+unavailable before launching each target-owned `uv run --script` entrypoint.
+A fake Ollama executable handled stdio MCP initialize, tools/list, list_models,
+suggest_names, and confirmed rename_model. Assertions checked structured/text
+result agreement, copy/verify/remove trace, and final fake inventory. This is
+direct MCP subprocess evidence, **not OpenCode MCP execution** or live Ollama
+compatibility. Runtime assets/skill inclusion and exclusion of tests/caches were
+checked in the real tarball.
+
+Discovery expects four installed skills and two disabled MCP entries. The initial
+attempt failed closed under the former exact-v2.0.30 policy because the available
+executable was `opencode v2.2.1`. The new minimum-version policy and successful
+v2.2.1 rerun are recorded separately above, not as an extension of historical
+v2.0.30 evidence. Sandbox mounts and network isolation are unchanged; no
+Python/uv/Ollama runtime was mounted. Public schema validation passed during
+controller acceptance; full-suite acceptance remains controller-owned.
 
 | Version | Command | Documented fact | Source-inspected fact | Measured result | Support boundary |
 |---|---|---|---|---|---|

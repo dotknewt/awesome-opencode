@@ -36,5 +36,5 @@ test("installed skills are discoverable by the isolated OpenCode v2 config API h
     return;
   }
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /discovered three native skills/);
+  assert.match(result.stdout, /discovered four native skills/);
 });

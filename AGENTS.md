@@ -42,7 +42,12 @@ that toolkit's strict `toolkit.json`. Toolkit versions are independent from the
 ## Validation
 
 Use Node.js 22 or newer and Python 3.10 or newer. Before reporting a change
-complete, run the commands in `CONTRIBUTING.md`, including full Python discovery,
+complete, require stable OpenCode v2.2.1 or greater for actual OpenCode checks.
+Use the shared runner's numeric version admission; reject prereleases and
+malformed versions. Record the actual measured version and require exact
+per-outcome consistency, not equality to the minimum version. Eligibility is
+not evidence of compatibility; retain behavioral assertions and sandbox isolation.
+Before reporting a change complete, run the commands in `CONTRIBUTING.md`, including full Python discovery,
 public OpenCode schema validation, and actual isolated OpenCode discovery when
 their prerequisites are available. Dedicated CI checks must install required
 prerequisites and must not convert setup absence into success.

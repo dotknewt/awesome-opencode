@@ -51,6 +51,18 @@ test("accepts the versioned manifest interface used by the engine", () => {
   assert.deepEqual(validateToolkitManifest(validManifest), []);
 });
 
+test("Ollama catalog declares its self-contained skill and MCP asset", async () => {
+  const loaded = await loadAndValidateToolkit(path.resolve(import.meta.dirname, "../../toolkits/ollama-toolkit/toolkit.json"));
+  assert.deepEqual(loaded.errors, []);
+  assert.equal(loaded.manifest?.version, "0.1.0");
+  assert.deepEqual(loaded.manifest?.requiredSkills, ["dotknewt-ollama-name-cleanup"]);
+  assert.deepEqual(loaded.manifest?.exports, [
+    { kind: "skill", source: "skills/dotknewt-ollama-name-cleanup", destination: "skills/dotknewt-ollama-name-cleanup" },
+    { kind: "asset", source: "mcp/ollama", destination: "mcp/ollama" },
+  ]);
+  assert.deepEqual(loaded.manifest?.mcp, [{ name: "dotknewt-ollama", type: "local", command: ["uv", "run", "--script"], entrypoint: "mcp/ollama/server.py", enabled: true }]);
+});
+
 test("accepts full SemVer and rejects invalid prerelease identifiers", () => {
   const withMetadata = structuredClone(validManifest);
   withMetadata.version = "1.2.3-alpha.1+build.5";
@@ -253,4 +265,5 @@ test("the packaged CLI validates its bundled catalog outside the source cwd", as
 
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /valid: libvirt-toolkit@0\.2\.1/);
+  assert.match(result.stdout, /valid: ollama-toolkit@0\.1\.0/);
 });

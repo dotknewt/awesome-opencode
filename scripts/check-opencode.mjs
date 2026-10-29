@@ -50,7 +50,7 @@ async function isolatedInstall(installer) {
   const root = await mkdtemp(path.join(tempBase, "awesome-opencode-native-check-"));
   const project = path.join(root, "project");
   await mkdir(project, { recursive: true });
-  const installed = await command(process.execPath, [installer, "install", "libvirt-toolkit", "project-toolkit", "--project", project], {
+  const installed = await command(process.execPath, [installer, "install", "libvirt-toolkit", "project-toolkit", "ollama-toolkit", "--project", project], {
     cwd: repositoryRoot,
     env: process.env,
   });
@@ -82,11 +82,13 @@ async function checkSchema(installer) {
     const Ajv2020 = Ajv2020Module.default;
     const ajv = new Ajv2020({ allErrors: true, strict: true });
     const validate = ajv.compile(localMcpSchema);
-    const entry = fixture.config.mcp?.["dotknewt-libvirt"];
-    assert.equal(validate(entry), true, ajv.errorsText(validate.errors));
-    assert.deepEqual(entry.command.slice(0, 3), ["uv", "run", "--script"]);
-    assert.equal(path.isAbsolute(entry.command[3]), true);
-    console.log("PASS: generated dotknewt-libvirt entry validates against public OpenCode $defs.McpLocalConfig");
+    for (const name of ["dotknewt-libvirt", "dotknewt-ollama"]) {
+      const entry = fixture.config.mcp?.[name];
+      assert.equal(validate(entry), true, ajv.errorsText(validate.errors));
+      assert.deepEqual(entry.command.slice(0, 3), ["uv", "run", "--script"]);
+      assert.equal(path.isAbsolute(entry.command[3]), true);
+      console.log(`PASS: generated ${name} entry validates against public OpenCode $defs.McpLocalConfig`);
+    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

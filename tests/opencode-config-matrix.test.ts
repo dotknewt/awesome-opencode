@@ -16,6 +16,7 @@ interface MatrixResult {
 }
 
 interface MatrixRunner {
+  validateOpenCodeVersion(output: string): string;
   matrixCases: MatrixCase[];
   expectedMeasuredCandidates: { caseId: string; loadedCandidates: string[] }[];
   validateMatrixResult(result: MatrixResult, expected: { version: string; caseId: string; loadedCandidates?: string[] }): void;
@@ -46,6 +47,33 @@ test("importing runner exports does not execute its CLI entrypoint", async () =>
   const originalExitCode = process.exitCode;
   await loadRunner();
   assert.equal(process.exitCode, originalExitCode);
+});
+
+test("stable OpenCode minimum uses numeric semver ordering", async () => {
+  const { validateOpenCodeVersion } = await loadRunner();
+  for (const version of ["2.2.1", "2.2.10", "2.10.0", "3.0.0", "10.0.0", "9007199254740993.0.0", "2.2.1+build.001"]) {
+    assert.equal(validateOpenCodeVersion(`  opencode v${version}\n`), `opencode v${version}`);
+  }
+  for (const version of ["0.9.0", "1.99.99", "2.0.30", "2.1.99", "2.2.0"]) {
+    assert.throws(() => validateOpenCodeVersion(`opencode v${version}`), /unsupported OpenCode version/);
+  }
+});
+
+test("OpenCode admission rejects malformed or prerelease whole output", async () => {
+  const { validateOpenCodeVersion } = await loadRunner();
+  for (const output of ["", "2.2.1", "opencode 2.2.1", "opencode v02.2.1", "opencode v2.02.1", "opencode v2.2.01", "opencode v2.2", "opencode v2.2.1.0", "opencode v2.2.1-rc.1", "opencode v3.0.0-beta+build", "opencode v2.2.1+", "opencode v2.2.1+a..b", "opencode v2.2.1+bad_", "noise\nopencode v2.2.1", "opencode v2.2.1\nnoise"]) {
+    assert.throws(() => validateOpenCodeVersion(output), /unsupported OpenCode version/);
+  }
+});
+
+test("eligible but different outcome version is not run evidence", async () => {
+  const { validateOpenCodeVersion, validateMatrixResult } = await loadRunner();
+  const version = validateOpenCodeVersion("opencode v2.2.1");
+  const other = validateOpenCodeVersion("opencode v2.3.0");
+  assert.throws(() => validateMatrixResult(
+    { version: other, caseId: "project-json", loadedCandidates: [] },
+    { version, caseId: "project-json" },
+  ), /unexpected OpenCode version/);
 });
 
 const inputCases: MatrixCase[] = [

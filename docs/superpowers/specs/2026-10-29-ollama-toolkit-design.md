@@ -54,3 +54,11 @@ not establish new MCP execution behavior. Check primary sources for any new
 OpenCode behavior relied upon and distinguish source evidence from experiments.
 Confirm redistribution provenance/license of the external script before copying
 its implementation. Missing prerequisites must be reported, not treated as passes.
+
+## Approved validation-policy amendment
+
+The user subsequently requested OpenCode v2.2.1 or greater instead of the exact
+v2.0.30 prerequisite. Admit stable releases at or above v2.2.1, retain fail-closed
+behavioral checks and sandbox isolation, and record the actual measured version.
+Historical v2.0.30 evidence stays labeled as historical; minimum eligibility is
+not a compatibility guarantee for untested future releases.
