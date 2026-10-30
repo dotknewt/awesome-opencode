@@ -17,7 +17,13 @@ const RUNTIME_OPENCODE = "/runtime/opencode";
 const RUNTIME_DRIVER = "/runtime/driver.mjs";
 const RUNTIME_VERSION_HELPER = "/runtime/opencode-version.mjs";
 const VERSION_HELPER = fileURLToPath(new URL("./opencode-version.mjs", import.meta.url));
-const SKILLS = ["dotknewt-libvirt-vms", "dotknewt-guest-access", "dotknewt-handling-todos", "dotknewt-ollama-name-cleanup"];
+export const SKILLS = ["dotknewt-libvirt-vms", "dotknewt-guest-access", "dotknewt-handling-todos", "dotknewt-ollama-name-cleanup", "dotknewt-kb-read"];
+
+export function assertKBDiscoveryEvidence(entry, expectedEntrypoint) {
+  assertNormalizedMcpDisabled(entry);
+  assert.ok(path.posix.isAbsolute(expectedEntrypoint), "KB entrypoint must be absolute");
+  assert.deepEqual(entry.command, ["uv", "run", "--script", expectedEntrypoint], "KB default must remain unconfigured with its installed entrypoint");
+}
 
 export const matrixCases = [
   ["project-json", ["project/opencode.json"]],
@@ -399,6 +405,8 @@ async function inside() {
         const ollama = projectDocument.info?.mcp?.servers?.["dotknewt-ollama"];
         assertNormalizedMcpDisabled(ollama);
         assert.equal(ollama?.command?.at(-1), config.expectedOllamaEntrypoint);
+        const kb = projectDocument.info?.mcp?.servers?.["dotknewt-kb"];
+        assertKBDiscoveryEvidence(kb, config.expectedKBEntrypoint);
         const configDirectories = documents
           .filter((entry) => entry.type === "directory")
           .map((entry) => entry.path);
@@ -433,6 +441,7 @@ async function inside() {
           disabled: mcp.disabled,
           command: mcp.command,
           ollama: { disabled: ollama.disabled, command: ollama.command },
+          kb: { disabled: kb.disabled, command: kb.command },
           pluginInventory,
           skills: discoveryDiagnostic,
         };
@@ -535,12 +544,22 @@ async function runDiscovery(opencode, project) {
   const expectedOllamaEntrypoint = path.posix.join("/fixture/project", ollamaRelative.split(path.sep).join("/"));
   ollama.enabled = false;
   ollama.command[ollama.command.length - 1] = expectedOllamaEntrypoint;
+  const kb = source.mcp?.["dotknewt-kb"];
+  assert.ok(kb && Array.isArray(kb.command), "installed fixture lacks dotknewt-kb MCP entry");
+  assert.equal(kb.enabled, false, "KB default must already be disabled, not forced off for discovery");
+  assert.equal(kb.command.length, 4, "KB default must be unconfigured");
+  const kbHostEntrypoint = kb.command.at(-1);
+  assert.ok(path.isAbsolute(kbHostEntrypoint), "KB installed entrypoint must be absolute");
+  const kbRelative = path.relative(project, kbHostEntrypoint);
+  assert.equal(kbRelative.split(path.sep).join("/"), ".opencode/awesome-opencode/toolkits/kb-toolkit/mcp/kb/server.py");
+  const expectedKBEntrypoint = path.posix.join("/fixture/project", kbRelative.split(path.sep).join("/"));
+  kb.command[kb.command.length - 1] = expectedKBEntrypoint;
   await writeFile(configFile, `${JSON.stringify(source, null, 2)}\n`);
   for (const directory of ["home", "xdg-config", "xdg-data", "xdg-cache", "xdg-state"]) {
     await mkdir(path.join(root, directory), { recursive: true });
   }
   const password = `discovery-${randomBytes(24).toString("hex")}`;
-  const config = { password, discovery: true, expectedEntrypoint, expectedOllamaEntrypoint, cases: [{ id: "discovery", inputCandidates: [] }] };
+  const config = { password, discovery: true, expectedEntrypoint, expectedOllamaEntrypoint, expectedKBEntrypoint, cases: [{ id: "discovery", inputCandidates: [] }] };
   const args = buildSandboxArgs({
     node: await realpath(process.execPath),
     opencode: await realpath(opencode),
@@ -559,10 +578,11 @@ async function runDiscovery(opencode, project) {
   assert.equal(evidence.outcomes[0]?.discoveryEvidence?.command?.at(-1), expectedEntrypoint);
   assert.equal(evidence.outcomes[0]?.discoveryEvidence?.ollama?.disabled, true);
   assert.equal(evidence.outcomes[0]?.discoveryEvidence?.ollama?.command?.at(-1), expectedOllamaEntrypoint);
+  assertKBDiscoveryEvidence(evidence.outcomes[0]?.discoveryEvidence?.kb, expectedKBEntrypoint);
   assert.ok(evidence.outcomes[0]?.discoveryEvidence?.pluginInventory?.plugins?.some((plugin) =>
     plugin.id === "opencode.config.skill" && plugin.sourceType === "builtin" && plugin.status === "active"));
   console.log(JSON.stringify(evidence, null, 2));
-  console.log(`PASS: ${evidence.version} discovered four native skills with both MCP servers disabled in isolated config API`);
+  console.log(`PASS: ${evidence.version} discovered five native skills with all three MCP servers disabled in isolated config API`);
 }
 
 async function main() {

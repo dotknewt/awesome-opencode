@@ -63,6 +63,19 @@ test("Ollama catalog declares its self-contained skill and MCP asset", async () 
   assert.deepEqual(loaded.manifest?.mcp, [{ name: "dotknewt-ollama", type: "local", command: ["uv", "run", "--script"], entrypoint: "mcp/ollama/server.py", enabled: true }]);
 });
 
+test("KB catalog declares a disabled unconfigured self-contained read-only toolkit", async () => {
+  const loaded = await loadAndValidateToolkit(path.resolve(import.meta.dirname, "../../toolkits/kb-toolkit/toolkit.json"));
+  assert.deepEqual(loaded.errors, []);
+  assert.equal(loaded.manifest?.version, "0.1.0");
+  assert.deepEqual(loaded.manifest?.requiredSkills, ["dotknewt-kb-read"]);
+  assert.deepEqual(loaded.manifest?.exports, [
+    { kind: "skill", source: "skills/dotknewt-kb-read", destination: "skills/dotknewt-kb-read" },
+    { kind: "asset", source: "mcp/kb", destination: "mcp/kb" },
+  ]);
+  assert.deepEqual(loaded.manifest?.dependencies, { platforms: ["linux"], executables: ["uv", "python3"] });
+  assert.deepEqual(loaded.manifest?.mcp, [{ name: "dotknewt-kb", type: "local", command: ["uv", "run", "--script"], entrypoint: "mcp/kb/server.py", enabled: false }]);
+});
+
 test("accepts full SemVer and rejects invalid prerelease identifiers", () => {
   const withMetadata = structuredClone(validManifest);
   withMetadata.version = "1.2.3-alpha.1+build.5";
@@ -266,4 +279,5 @@ test("the packaged CLI validates its bundled catalog outside the source cwd", as
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /valid: libvirt-toolkit@0\.2\.1/);
   assert.match(result.stdout, /valid: ollama-toolkit@0\.1\.0/);
+  assert.match(result.stdout, /valid: kb-toolkit@0\.1\.0/);
 });

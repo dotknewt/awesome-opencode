@@ -1,0 +1,7 @@
+{
+  "root": "/absolute/path/to/published-kb",
+  "uri_prefix": "intel://",
+  "uri_key": "intel_uri",
+  "index_path": "index.md",
+  "navigation_heading": "Published-record navigation"
+}

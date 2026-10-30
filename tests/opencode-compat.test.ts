@@ -35,7 +35,7 @@ test("generated MCP config validates against the public native OpenCode schema",
 test("installed skills are discoverable by the isolated OpenCode v2 config API harness", { timeout: 150_000 }, async (t) => {
   const result = await run(["discovery"]);
   assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /discovered four native skills/);
+  assert.match(result.stdout, /discovered five native skills with all three MCP servers disabled/);
   assert.match(result.stdout, /OpenCode version verified: opencode v\d+\.\d+\.\d+/);
 });
 

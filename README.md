@@ -9,6 +9,10 @@ Documented npm commands are retained only for interoperability checks.
 
 ## Available toolkits
 
+- `kb-toolkit` installs `dotknewt-kb-read` and a disabled-by-default Markdown KB
+  MCP server. Configure separate instances for existing and future KB namespaces;
+  only indexed records are exposed through read-only list/search/read operations.
+  See [KB setup and publication format](toolkits/kb-toolkit/README.md).
 - `ollama-toolkit` installs `dotknewt-ollama-name-cleanup` and a local MCP server
   for model inventory, heuristic naming suggestions, and explicitly approved
   single-model copy/verify/remove renames. No pulls or batch mutation.
@@ -35,6 +39,9 @@ Documented npm commands are retained only for interoperability checks.
   acquire the pinned `mcp==2.2.0` dependency.
 - For Ollama tools: Python 3.10+, `uv`, and the `ollama` CLI with access to your
   intended local Ollama service. Installation itself does not contact Ollama.
+- For KB tools: Python 3.10+, `uv`, and an explicitly configured local published
+  Markdown root. First launch may provision `mcp==2.2.0` and `PyYAML==6.0.3`;
+  the server itself does not fetch network content or change KB records.
 
 Installing content does not start the MCP server, contact libvirt, or operate a
 VM. Restart OpenCode after an applied install, update, or uninstall.

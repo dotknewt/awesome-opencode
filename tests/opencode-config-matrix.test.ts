@@ -16,6 +16,8 @@ interface MatrixResult {
 }
 
 interface MatrixRunner {
+  SKILLS: string[];
+  assertKBDiscoveryEvidence(entry: unknown, expectedEntrypoint: string): void;
   validateOpenCodeVersion(output: string): string;
   matrixCases: MatrixCase[];
   expectedMeasuredCandidates: { caseId: string; loadedCandidates: string[] }[];
@@ -132,6 +134,22 @@ test("normalized MCP disabled contract uses disabled=true only", async () => {
   assert.doesNotThrow(() => assertNormalizedMcpDisabled({ disabled: true }));
   assert.throws(() => assertNormalizedMcpDisabled({ disabled: false }), /disabled/i);
   assert.throws(() => assertNormalizedMcpDisabled({}), /disabled/i);
+});
+
+test("KB discovery requires native skill and disabled installed command evidence", async () => {
+  const runner = await loadRunner();
+  assert.ok(runner.SKILLS?.includes("dotknewt-kb-read"), "KB skill missing from concrete discovery inventory");
+  const entrypoint = "/fixture/project/.opencode/awesome-opencode/toolkits/kb-toolkit/mcp/kb/server.py";
+  const valid = { disabled: true, command: ["uv", "run", "--script", entrypoint] };
+  assert.doesNotThrow(() => runner.assertKBDiscoveryEvidence(valid, entrypoint));
+  for (const entry of [undefined, { ...valid, disabled: false }, { ...valid, command: ["uv", "run", "--script", "relative/server.py"] }, { ...valid, command: [...valid.command, "--config", "/private/config.json"] }]) {
+    assert.throws(() => runner.assertKBDiscoveryEvidence(entry, entrypoint));
+  }
+  assert.throws(() => runner.assertKBDiscoveryEvidence(valid, "relative/server.py"));
+  assert.throws(() => runner.assertKBDiscoveryEvidence(valid, "/fixture/project/wrong/server.py"));
+  const body = { location: { directory: "/fixture/project" }, data: runner.SKILLS.map(name => ({ id: name, name, path: `/fixture/project/.opencode/skills/${name}/SKILL.md` })) };
+  assert.doesNotThrow(() => runner.validateSkillDiscovery(body, runner.SKILLS, "/fixture/project"));
+  assert.throws(() => runner.validateSkillDiscovery({ ...body, data: body.data.filter(item => item.name !== "dotknewt-kb-read") }, runner.SKILLS, "/fixture/project"), /missing native skill/);
 });
 
 test("plugin readiness advances from absent to active builtin", async () => {

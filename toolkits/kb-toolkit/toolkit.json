@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": "kb-toolkit",
+  "namespace": "dotknewt",
+  "version": "0.1.0",
+  "description": "Read indexed Markdown knowledge-base snapshots through independently configured MCP instances.",
+  "license": "MIT",
+  "exports": [
+    {"kind": "skill", "source": "skills/dotknewt-kb-read", "destination": "skills/dotknewt-kb-read"},
+    {"kind": "asset", "source": "mcp/kb", "destination": "mcp/kb"}
+  ],
+  "requiredSkills": ["dotknewt-kb-read"],
+  "mcp": [
+    {"name": "dotknewt-kb", "type": "local", "command": ["uv", "run", "--script"], "entrypoint": "mcp/kb/server.py", "enabled": false}
+  ],
+  "dependencies": {"platforms": ["linux"], "executables": ["uv", "python3"]}
+}

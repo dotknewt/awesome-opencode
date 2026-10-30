@@ -38,6 +38,26 @@ node scripts/check-opencode-config-matrix.mjs
 node scripts/check-opencode.mjs discovery
 ```
 
+Also run full KB discovery on the declared Python minimum and the shared test
+runtime. These tests use disposable synthetic KBs and real MCP stdio, never the
+operator's vault:
+
+```sh
+for version in 3.10 3.13; do
+  PYTHONDONTWRITEBYTECODE=1 \
+  uv run --isolated --python "$version" --with 'mcp==2.2.0' --with 'PyYAML==6.0.3' \
+    python -m unittest discover -s toolkits/kb-toolkit/tests -p 'test_*.py' -v || exit
+done
+```
+
+uv may provision interpreters/dependencies; that is not KB content fetching.
+Installed KB protocol checks require these dependencies (cached or downloadable)
+and a working `bwrap` mount/PID namespace. They mask the developer checkout and
+remove the packaged source before launching installed files in both scopes;
+only the disposable fixture root is writable. Setup failures fail rather than
+skip this check. The default KB MCP
+entry remains disabled/unconfigured; discovery alone does not verify execution.
+
 Optional: select a specific executable instead of the installed `opencode` on
 `PATH` (replace the example with a real executable path):
 
@@ -67,7 +87,7 @@ Package acceptance launches installed Ollama MCP entrypoints in both scopes
 with a fake `ollama` executable and disposable HOME/XDG/inventory. It requires
 `uv`, Python, and cached dependencies or network access; absence fails rather
 than skips this protocol check. No real Ollama service is used. OpenCode discovery
-keeps both MCP entries disabled: skill/config discovery is not MCP execution.
+keeps bundled MCP entries disabled: skill/config discovery is not MCP execution.
 
 Before submitting changes:
 
