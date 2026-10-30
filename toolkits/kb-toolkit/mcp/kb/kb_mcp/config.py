@@ -100,5 +100,13 @@ def validate_config(config):
     if not re.fullmatch(r'[A-Za-z][A-Za-z0-9+.-]*://', config.uri_prefix):
         raise ValueError
     relative_path(config.index_path)
-    if config.navigation_heading != config.navigation_heading.strip() or any(c in '#`*_[]<>' for c in config.navigation_heading):
+    heading = config.navigation_heading
+    # Headings are literal publication selectors, never rendered Markdown.
+    # Reject reference-shaped syntax without decoding it or normalizing text;
+    # ordinary ampersands and isolated tildes remain valid plain text.
+    if (heading != heading.strip()
+            or any(c in '#`*_[]<>\\' for c in heading)
+            or '~~' in heading
+            or re.search(r'~\S(?:.*\S)?~', heading)
+            or re.search(r'&(?:[A-Za-z][A-Za-z0-9]*|#[0-9]+|#[xX][0-9A-Fa-f]+);', heading)):
         raise ValueError

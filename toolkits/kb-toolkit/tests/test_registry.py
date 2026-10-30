@@ -88,6 +88,44 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(KBError):
             load_config(str(path))
 
+    def test_navigation_heading_rejects_inline_markup_through_both_entrypoints(self):
+        self.fixture()
+        index = self.root / 'index.md'
+        original = index.read_text()
+        path = self.root / 'config.json'
+        for heading in ['~~Published records~~', 'Published ~~records~~', '~Published records~',
+                        r'Published\ records', r'Published\! records',
+                        'Published &amp; records', '&copy; Published records',
+                        'Published &#38; records', 'Published &#x26; records',
+                        'Published &#X26; records']:
+            config = replace(self.config, navigation_heading=heading)
+            path.write_text(json.dumps(asdict(config)))
+            index.write_text(original.replace(self.config.navigation_heading, heading))
+            with self.subTest(heading=heading, entrypoint='load_config'):
+                with self.assertRaises(KBError) as caught:
+                    load_config(str(path))
+                self.assertEqual(caught.exception.code, 'invalid_config')
+            with self.subTest(heading=heading, entrypoint='load_registry'):
+                with self.assertRaises(KBError) as caught:
+                    load_registry(config)
+                self.assertEqual(caught.exception.code, 'invalid_source')
+
+    def test_navigation_heading_retains_plain_text_through_both_entrypoints(self):
+        self.fixture()
+        index = self.root / 'index.md'
+        original = index.read_text()
+        path = self.root / 'config.json'
+        for heading in ['Published-record navigation', 'Published records (2026)',
+                        'Research & development', 'Published ~ records', '公開記録']:
+            with self.subTest(heading=heading):
+                config = replace(self.config, navigation_heading=heading)
+                path.write_text(json.dumps(asdict(config)))
+                index.write_text(original.replace(self.config.navigation_heading, heading))
+                loaded = load_config(str(path))
+                self.assertEqual(loaded, config)
+                for candidate in [loaded, config]:
+                    self.assertEqual(len(load_registry(candidate).list_records()['records']), 2)
+
     def test_config_field_maxima_are_utf8_byte_limits(self):
         path = self.root / 'config.json'
         maximum = dict(root='/' + 'a' * 4095, uri_prefix='a' * 61 + '://', uri_key='é' * 32,

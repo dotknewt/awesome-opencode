@@ -1,8 +1,9 @@
 # Read-only KB MCP toolkit
 
-Status: approved with targeted revisions incorporated. The pinned-SDK serialized
-URI round-trip gate passed; real stdio and installed-runtime acceptance remain
-implementation gates.
+Status: implemented with targeted revisions incorporated. Pinned-SDK URI,
+real-stdio, installed-runtime, public schema, and isolated OpenCode v2.2.1
+acceptance gates passed on 2026-10-30. Whole-branch review and its scoped
+heading-validation correction passed; no live KB or agent configuration changed.
 
 ## Intent and decisions
 
